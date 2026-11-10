@@ -23,7 +23,7 @@ const READING_INSTRUCTIONS = `你是 InkAsk 阅读学习助手，帮助用户理
 export type StreamEvent = {
   type?: string;
   delta?: string;
-  error?: { code?: string; message?: string; type?: string };
+  error?: { code?: string; message?: string; type?: string; status?: number };
   response?: { status?: string; error?: { code?: string; message?: string } };
 };
 
@@ -46,6 +46,12 @@ export interface CreateAppOptions {
 }
 
 class ValidationError extends Error {}
+
+class PublicStreamError extends Error {
+  constructor(readonly detail: { code: string; message: string }) {
+    super(detail.code);
+  }
+}
 
 function apiOrigin(req: FastifyRequest, reply: FastifyReply): FastifyReply | undefined {
   const hostHeader = req.headers.host ?? '';
@@ -154,13 +160,17 @@ function buildInput(request: ChatRequest): Array<Record<string, unknown>> {
     detail: 'auto',
   });
 
-  const messages = request.history.map((message) => ({
-    role: message.role,
-    content: [
-      { type: 'input_text', text: message.content },
-      ...(message.images ?? []).map(imagePart),
-    ],
-  }));
+  const messages = request.history.map((message) =>
+    message.role === 'assistant'
+      ? { role: 'assistant', content: message.content }
+      : {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: message.content },
+            ...(message.images ?? []).map(imagePart),
+          ],
+        },
+  );
 
   messages.push({
     role: 'user',
@@ -177,6 +187,7 @@ function sseFrame(event: 'start' | 'delta' | 'completed' | 'error', data: unknow
 }
 
 function errorDetails(error: unknown): { code: string; message: string } {
+  if (error instanceof PublicStreamError) return error.detail;
   const status = isRecord(error) && typeof error.status === 'number' ? error.status : undefined;
   if (status === 401 || status === 403) {
     return {
@@ -231,24 +242,41 @@ async function* streamChat(
       if (signal.aborted) return;
       if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
         yield sseFrame('delta', { text: event.delta });
-      } else if (
-        event.type === 'response.output_text.done' ||
-        event.type === 'response.completed'
-      ) {
-        if (!completed) {
+      } else if (event.type === 'response.output_text.done') {
+        // Text completion is not response completion; wait for response.completed.
+      } else if (event.type === 'response.completed') {
+        const status = event.response?.status;
+        if (status === undefined || status === 'completed') {
           completed = true;
           yield sseFrame('completed', { status: 'complete' });
+          break;
         }
+        throw new PublicStreamError({
+          code: status === 'incomplete' ? 'response_incomplete' : 'response_failed',
+          message: 'AI 未能完整生成回答，请重试。',
+        });
+      } else if (event.type === 'response.incomplete') {
+        throw new PublicStreamError({
+          code: 'response_incomplete',
+          message: 'AI 未能完整生成回答，已保留收到的内容，请重试。',
+        });
       } else if (event.type === 'response.failed' || event.type === 'error') {
-        throw Object.assign(
-          new Error('Upstream response failed'),
-          event.error ?? event.response?.error ?? {},
-        );
+        const status = event.error?.status;
+        if (status === 401 || status === 403 || status === 429) {
+          throw Object.assign(new Error('Upstream response failed'), { status });
+        }
+        throw new PublicStreamError({
+          code: 'response_failed',
+          message: 'AI 未能完成回答，已保留收到的内容，请重试。',
+        });
       }
     }
 
     if (!completed && !signal.aborted) {
-      yield sseFrame('completed', { status: 'complete' });
+      throw new PublicStreamError({
+        code: 'incomplete_stream',
+        message: 'AI 响应意外中断，已保留收到的内容，请重试。',
+      });
     }
   } catch (error) {
     if (!signal.aborted) {

@@ -105,7 +105,7 @@ describe('InkAsk API', () => {
     expect(captured.body?.input).toEqual([
       {
         role: 'assistant',
-        content: [{ type: 'input_text', text: '上一轮回答。' }],
+        content: '上一轮回答。',
       },
       {
         role: 'user',
@@ -115,6 +115,78 @@ describe('InkAsk API', () => {
         ],
       },
     ]);
+    await app.close();
+  });
+
+  it('accepts an explicit completed response status', async () => {
+    const client = clientFrom([
+      { type: 'response.completed', response: { status: 'completed' } },
+    ]);
+    const app = createApp({ client, model: 'test-model' });
+    const response = await app.inject({ method: 'POST', url: '/api/chat', payload: validBody });
+    expect(response.body.match(/event: completed/g)).toHaveLength(1);
+    expect(response.body).not.toContain('event: error');
+    await app.close();
+  });
+
+  it('does not treat output_text.done or a bare EOF as completion', async () => {
+    const client = clientFrom([
+      { type: 'response.output_text.delta', delta: 'partial answer' },
+      { type: 'response.output_text.done' },
+    ]);
+    const app = createApp({ client, model: 'test-model' });
+    const response = await app.inject({ method: 'POST', url: '/api/chat', payload: validBody });
+    expect(response.body).toContain('partial answer');
+    expect(response.body).not.toContain('event: completed');
+    expect(response.body).toContain('event: error');
+    expect(response.body).toContain('"code":"incomplete_stream"');
+    await app.close();
+  });
+
+  it('rejects bare EOF after partial output', async () => {
+    const client = clientFrom([
+      { type: 'response.output_text.delta', delta: 'partial answer' },
+    ]);
+    const app = createApp({ client, model: 'test-model' });
+    const response = await app.inject({ method: 'POST', url: '/api/chat', payload: validBody });
+    expect(response.body).toContain('partial answer');
+    expect(response.body).not.toContain('event: completed');
+    expect(response.body).toContain('"code":"incomplete_stream"');
+    await app.close();
+  });
+
+  it('rejects response.incomplete without leaking provider details', async () => {
+    const client = clientFrom([
+      { type: 'response.output_text.delta', delta: 'partial answer' },
+      {
+        type: 'response.incomplete',
+        response: {
+          status: 'incomplete',
+          error: { code: 'provider_detail', message: 'sensitive upstream detail' },
+        },
+      },
+    ]);
+    const app = createApp({ client, model: 'test-model' });
+    const response = await app.inject({ method: 'POST', url: '/api/chat', payload: validBody });
+    expect(response.body).toContain('partial answer');
+    expect(response.body).not.toContain('event: completed');
+    expect(response.body).toContain('"code":"response_incomplete"');
+    expect(response.body).not.toContain('sensitive upstream detail');
+    await app.close();
+  });
+
+  it('rejects response.failed with a safe error', async () => {
+    const client = clientFrom([
+      {
+        type: 'response.failed',
+        error: { code: 'provider_detail', message: 'sensitive upstream detail', status: 500 },
+      },
+    ]);
+    const app = createApp({ client, model: 'test-model' });
+    const response = await app.inject({ method: 'POST', url: '/api/chat', payload: validBody });
+    expect(response.body).not.toContain('event: completed');
+    expect(response.body).toContain('"code":"response_failed"');
+    expect(response.body).not.toContain('sensitive upstream detail');
     await app.close();
   });
 
