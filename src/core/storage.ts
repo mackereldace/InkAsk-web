@@ -1,13 +1,13 @@
-import Dexie, { type Table } from 'dexie';
-import type { InkDocument, Project } from '../types';
+import Dexie, { type Table } from "dexie";
+import type { InkDocument, Project } from "../types";
 
 class InkAskDatabase extends Dexie {
   projects!: Table<Project, string>;
 
   constructor() {
-    super('inkask');
+    super("inkask");
     this.version(1).stores({
-      projects: 'document.id, document.updatedAt',
+      projects: "document.id, document.updatedAt",
     });
   }
 }
@@ -27,7 +27,7 @@ function normalizeLoaded(project: Project): Project {
   const copy = cloneProject(project);
   for (const note of copy.notes) {
     for (const message of note.messages) {
-      if (message.status === 'streaming') message.status = 'stopped';
+      if (message.status === "streaming") message.status = "stopped";
     }
   }
   return copy;

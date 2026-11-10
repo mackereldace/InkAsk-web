@@ -1,11 +1,11 @@
-import type { PromptTemplate, Task } from '../types';
+import type { PromptTemplate, Task } from "../types";
 
 export const TASK_LABELS: Record<Task, string> = {
-  explain: '解释这段',
-  formula: '解释公式',
-  summarize: '总结',
-  translate: '翻译',
-  custom: '自定义提问',
+  explain: "解释这段",
+  formula: "解释公式",
+  summarize: "总结",
+  translate: "翻译",
+  custom: "自定义提问",
 };
 
 export const SYSTEM_PROMPT = `你是 InkAsk 阅读学习助手，帮助用户理解教材与学习资料。
@@ -22,15 +22,15 @@ export const SYSTEM_PROMPT = `你是 InkAsk 阅读学习助手，帮助用户理
 回答深度服从用户当前任务，不强制每次输出长篇讲解。`;
 
 export const TEMPLATE_VARIABLES = [
-  'task',
-  'document_title',
-  'page_number',
-  'coverage',
-  'selected_text',
-  'context_with_source_ids',
-  'branch_quote',
-  'question',
-  'attachment_descriptions',
+  "task",
+  "document_title",
+  "page_number",
+  "coverage",
+  "selected_text",
+  "context_with_source_ids",
+  "branch_quote",
+  "question",
+  "attachment_descriptions",
 ] as const;
 
 export type TemplateVariable = (typeof TEMPLATE_VARIABLES)[number];
@@ -69,38 +69,44 @@ ${CONTEXT_FIELDS}`;
 
 export const DEFAULT_TEMPLATES: PromptTemplate[] = [
   {
-    id: 'template-explain-v1',
+    id: "template-explain-v1",
     name: TASK_LABELS.explain,
-    task: 'explain',
-    body: fullTemplate('解释选中的内容。先给出直接结论，再说明关键概念、依据和必要步骤。'),
+    task: "explain",
+    body: fullTemplate(
+      "解释选中的内容。先给出直接结论，再说明关键概念、依据和必要步骤。",
+    ),
     version: 1,
   },
   {
-    id: 'template-formula-v1',
+    id: "template-formula-v1",
     name: TASK_LABELS.formula,
-    task: 'formula',
-    body: fullTemplate('解释选中的公式。说明各符号含义、适用条件、推导思路和常见错误。'),
+    task: "formula",
+    body: fullTemplate(
+      "解释选中的公式。说明各符号含义、适用条件、推导思路和常见错误。",
+    ),
     version: 1,
   },
   {
-    id: 'template-summarize-v1',
+    id: "template-summarize-v1",
     name: TASK_LABELS.summarize,
-    task: 'summarize',
-    body: fullTemplate('提炼选中内容的核心论点、定义、结论与仍待确认的信息。'),
+    task: "summarize",
+    body: fullTemplate("提炼选中内容的核心论点、定义、结论与仍待确认的信息。"),
     version: 1,
   },
   {
-    id: 'template-translate-v1',
+    id: "template-translate-v1",
     name: TASK_LABELS.translate,
-    task: 'translate',
-    body: fullTemplate('准确翻译选中内容，保留公式、术语和原文结构；必要时解释疑难表达。'),
+    task: "translate",
+    body: fullTemplate(
+      "准确翻译选中内容，保留公式、术语和原文结构；必要时解释疑难表达。",
+    ),
     version: 1,
   },
   {
-    id: 'template-custom-v1',
+    id: "template-custom-v1",
     name: TASK_LABELS.custom,
-    task: 'custom',
-    body: fullTemplate('严格围绕用户问题作答，并结合提供的原文与上下文。'),
+    task: "custom",
+    body: fullTemplate("严格围绕用户问题作答，并结合提供的原文与上下文。"),
     version: 1,
   },
 ];
@@ -110,13 +116,20 @@ export interface InterpolatedTemplate {
   used: ReadonlySet<TemplateVariable>;
 }
 
-export function interpolateTemplate(body: string, variables: TemplateVariables): InterpolatedTemplate {
+export function interpolateTemplate(
+  body: string,
+  variables: TemplateVariables,
+): InterpolatedTemplate {
   const used = new Set<TemplateVariable>();
-  const text = body.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (placeholder, rawName: string) => {
-    if (!TEMPLATE_VARIABLES.includes(rawName as TemplateVariable)) return placeholder;
-    const name = rawName as TemplateVariable;
-    used.add(name);
-    return variables[name];
-  });
+  const text = body.replace(
+    /\{\{\s*([a-z_]+)\s*\}\}/g,
+    (placeholder, rawName: string) => {
+      if (!TEMPLATE_VARIABLES.includes(rawName as TemplateVariable))
+        return placeholder;
+      const name = rawName as TemplateVariable;
+      used.add(name);
+      return variables[name];
+    },
+  );
   return { text, used };
 }

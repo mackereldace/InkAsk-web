@@ -1,4 +1,4 @@
-import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import type {
   Asset,
   HistoryMessage,
@@ -10,7 +10,7 @@ import type {
   PromptTemplate,
   Rect,
   Source,
-} from '../types';
+} from "../types";
 
 export const ARCHIVE_LIMITS = Object.freeze({
   archiveBytes: 128 * 1024 * 1024,
@@ -20,26 +20,28 @@ export const ARCHIVE_LIMITS = Object.freeze({
   assets: 2_000,
 });
 
-interface ArchivedAsset extends Omit<Asset, 'data'> {
+interface ArchivedAsset extends Omit<Asset, "data"> {
   archivePath: string;
 }
 
 interface Manifest {
-  format: 'inkask';
+  format: "inkask";
   formatVersion: 1;
-  project: Omit<Project, 'document' | 'assets'> & {
-    document: Omit<InkDocument, 'pdf'> & { pdfPath: string };
+  project: Omit<Project, "document" | "assets"> & {
+    document: Omit<InkDocument, "pdf"> & { pdfPath: string };
     assets: ArchivedAsset[];
   };
 }
 
 function randomId(prefix: string): string {
-  return globalThis.crypto?.randomUUID?.() ??
-    `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  );
 }
 
 function safeName(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80) || 'asset';
+  return value.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 80) || "asset";
 }
 
 async function bytes(blob: Blob): Promise<Uint8Array> {
@@ -59,13 +61,13 @@ function equalRect(a: Rect, b: Rect): boolean {
 export async function exportProject(project: Project): Promise<Blob> {
   const pdf = await bytes(project.document.pdf);
   if (!pdf.byteLength || pdf.byteLength > ARCHIVE_LIMITS.pdfBytes) {
-    throw new Error('PDF is empty or exceeds the archive size limit.');
+    throw new Error("PDF is empty or exceeds the archive size limit.");
   }
   if (project.assets.length > ARCHIVE_LIMITS.assets) {
-    throw new Error('Project contains too many assets.');
+    throw new Error("Project contains too many assets.");
   }
 
-  const files: Record<string, Uint8Array> = { 'document.pdf': pdf };
+  const files: Record<string, Uint8Array> = { "document.pdf": pdf };
   const archivedAssets: ArchivedAsset[] = [];
   for (const [index, asset] of project.assets.entries()) {
     const assetBytes = await bytes(asset.data);
@@ -80,33 +82,37 @@ export async function exportProject(project: Project): Promise<Blob> {
 
   const { pdf: _pdf, ...document } = project.document;
   const manifest: Manifest = {
-    format: 'inkask',
+    format: "inkask",
     formatVersion: 1,
     project: {
       ...project,
-      document: { ...document, pdfPath: 'document.pdf' },
+      document: { ...document, pdfPath: "document.pdf" },
       assets: archivedAssets,
     },
   };
-  files['manifest.json'] = strToU8(JSON.stringify(manifest));
+  files["manifest.json"] = strToU8(JSON.stringify(manifest));
   const zipped = zipSync(files, { level: 6 });
   const output = new Uint8Array(zipped.byteLength);
   output.set(zipped);
-  return new Blob([output.buffer], { type: 'application/zip' });
+  return new Blob([output.buffer], { type: "application/zip" });
 }
 
-function assertRecord(value: unknown, name: string): asserts value is Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+function assertRecord(
+  value: unknown,
+  name: string,
+): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`Invalid ${name}.`);
   }
 }
 
 function assertString(value: unknown, name: string): asserts value is string {
-  if (typeof value !== 'string') throw new Error(`${name} must be a string.`);
+  if (typeof value !== "string") throw new Error(`${name} must be a string.`);
 }
 
 function assertNumber(value: unknown, name: string): asserts value is number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${name} must be a number.`);
+  if (typeof value !== "number" || !Number.isFinite(value))
+    throw new Error(`${name} must be a number.`);
 }
 
 function assertArray(value: unknown, name: string): asserts value is unknown[] {
@@ -117,20 +123,25 @@ function assertRect(value: unknown, name: string): asserts value is Rect {
   if (
     !Array.isArray(value) ||
     value.length !== 4 ||
-    value.some((coordinate) => typeof coordinate !== 'number' || !Number.isFinite(coordinate))
+    value.some(
+      (coordinate) =>
+        typeof coordinate !== "number" || !Number.isFinite(coordinate),
+    )
   ) {
     throw new Error(`${name} must be a four-number rectangle.`);
   }
 }
 
-function rejectPrototypeKeys(value: unknown, path = 'manifest'): void {
-  if (!value || typeof value !== 'object') return;
+function rejectPrototypeKeys(value: unknown, path = "manifest"): void {
+  if (!value || typeof value !== "object") return;
   if (Array.isArray(value)) {
-    value.forEach((item, index) => rejectPrototypeKeys(item, `${path}[${index}]`));
+    value.forEach((item, index) =>
+      rejectPrototypeKeys(item, `${path}[${index}]`),
+    );
     return;
   }
   for (const [key, child] of Object.entries(value)) {
-    if (['__proto__', 'prototype', 'constructor'].includes(key)) {
+    if (["__proto__", "prototype", "constructor"].includes(key)) {
       throw new Error(`Forbidden key in ${path}: ${key}.`);
     }
     rejectPrototypeKeys(child, `${path}.${key}`);
@@ -151,16 +162,24 @@ function remapText(value: string, ids: Map<string, string>): string {
   return output;
 }
 
-function remapAssetIds(values: string[] | undefined, ids: Map<string, string>): string[] | undefined {
+function remapAssetIds(
+  values: string[] | undefined,
+  ids: Map<string, string>,
+): string[] | undefined {
   if (!values) return undefined;
   return values.map((value) => ids.get(value) ?? value);
 }
 
-function remapHistory(messages: HistoryMessage[], ids: Map<string, string>): HistoryMessage[] {
+function remapHistory(
+  messages: HistoryMessage[],
+  ids: Map<string, string>,
+): HistoryMessage[] {
   return messages.map((message) => ({
     ...message,
     content: remapText(message.content, ids),
-    ...(message.assetIds ? { assetIds: remapAssetIds(message.assetIds, ids) } : {}),
+    ...(message.assetIds
+      ? { assetIds: remapAssetIds(message.assetIds, ids) }
+      : {}),
   }));
 }
 
@@ -178,32 +197,49 @@ function remapMessage(
     ...message,
     id: messageIds.get(message.id)!,
     content: remapText(message.content, ids),
-    assetIds: (remapAssetIds(message.assetIds, ids) ?? []),
+    assetIds: remapAssetIds(message.assetIds, ids) ?? [],
     ...(message.error ? { error: remapText(message.error, ids) } : {}),
     ...(message.prompt ? { prompt: remapText(message.prompt, ids) } : {}),
     ...(message.template
-      ? { template: { ...message.template, id: templateIds.get(message.template.id) ?? message.template.id } }
+      ? {
+          template: {
+            ...message.template,
+            id: templateIds.get(message.template.id) ?? message.template.id,
+          },
+        }
       : {}),
-    ...(message.sources ? { sources: message.sources.map((source) => remapSource(source, ids)) } : {}),
+    ...(message.sources
+      ? { sources: message.sources.map((source) => remapSource(source, ids)) }
+      : {}),
     ...(message.coverage ? { coverage: remapText(message.coverage, ids) } : {}),
     ...(message.history ? { history: remapHistory(message.history, ids) } : {}),
   };
 }
 
 function remapProject(project: Project): Project {
-  const documentId = randomId('document');
-  const assetIds = new Map(project.assets.map((asset) => [asset.id, randomId('asset')]));
-  const noteIds = new Map(project.notes.map((note) => [note.id, randomId('note')]));
+  const documentId = randomId("document");
+  const assetIds = new Map(
+    project.assets.map((asset) => [asset.id, randomId("asset")]),
+  );
+  const noteIds = new Map(
+    project.notes.map((note) => [note.id, randomId("note")]),
+  );
   const messageIds = new Map(
-    project.notes.flatMap((note) => note.messages.map((message) => [message.id, randomId('message')] as const)),
+    project.notes.flatMap((note) =>
+      note.messages.map(
+        (message) => [message.id, randomId("message")] as const,
+      ),
+    ),
   );
   const templateIds = new Map(
     [
       ...project.templates.map((template) => template.id),
       ...project.notes.flatMap((note) =>
-        note.messages.flatMap((message) => message.template ? [message.template.id] : []),
+        note.messages.flatMap((message) =>
+          message.template ? [message.template.id] : [],
+        ),
       ),
-    ].map((templateId) => [templateId, randomId('template')] as const),
+    ].map((templateId) => [templateId, randomId("template")] as const),
   );
   const allIds = new Map<string, string>([
     [project.document.id, documentId],
@@ -224,14 +260,23 @@ function remapProject(project: Project): Project {
     pages: project.pages.map((page) => ({
       ...page,
       text: remapText(page.text, allIds),
-      words: page.words.map((word) => ({ ...word, text: remapText(word.text, allIds), rect: [...word.rect] })),
+      words: page.words.map((word) => ({
+        ...word,
+        text: remapText(word.text, allIds),
+        rect: [...word.rect],
+      })),
     })),
     assets: project.assets.map((asset) => ({
       ...asset,
       id: assetIds.get(asset.id)!,
       name: remapText(asset.name, allIds),
       ...(asset.source
-        ? { source: { ...asset.source, ...(asset.source.rect ? { rect: [...asset.source.rect] } : {}) } }
+        ? {
+            source: {
+              ...asset.source,
+              ...(asset.source.rect ? { rect: [...asset.source.rect] } : {}),
+            },
+          }
         : {}),
     })),
     notes: project.notes.map((note) => ({
@@ -243,11 +288,18 @@ function remapProject(project: Project): Project {
         rects: note.anchor.rects.map((rect) => [...rect]),
         quote: remapText(note.anchor.quote, allIds),
       },
-      ...(note.parentId ? { parentId: noteIds.get(note.parentId) ?? note.parentId } : {}),
-      ...(note.parentMessageId
-        ? { parentMessageId: messageIds.get(note.parentMessageId) ?? note.parentMessageId }
+      ...(note.parentId
+        ? { parentId: noteIds.get(note.parentId) ?? note.parentId }
         : {}),
-      ...(note.branchQuote ? { branchQuote: remapText(note.branchQuote, allIds) } : {}),
+      ...(note.parentMessageId
+        ? {
+            parentMessageId:
+              messageIds.get(note.parentMessageId) ?? note.parentMessageId,
+          }
+        : {}),
+      ...(note.branchQuote
+        ? { branchQuote: remapText(note.branchQuote, allIds) }
+        : {}),
       inheritedHistory: remapHistory(note.inheritedHistory, allIds),
       templateId: templateIds.get(note.templateId) ?? note.templateId,
       draft: remapText(note.draft, allIds),
@@ -266,31 +318,41 @@ function remapProject(project: Project): Project {
 }
 
 function validateTextReferences(value: string, assetIds: Set<string>): void {
-  for (const match of value.matchAll(/(?:inkask:\/\/asset\/|asset:)([A-Za-z0-9._~-]+)/g)) {
-    if (!assetIds.has(match[1])) throw new Error(`Content references missing asset ${match[1]}.`);
+  for (const match of value.matchAll(
+    /(?:inkask:\/\/asset\/|asset:)([A-Za-z0-9._~-]+)/g,
+  )) {
+    if (!assetIds.has(match[1]))
+      throw new Error(`Content references missing asset ${match[1]}.`);
   }
 }
 
 function validateReferences(project: Project): void {
   const pages = new Set<number>();
   for (const page of project.pages) {
-    if (!Number.isInteger(page.page) || page.page < 1 || page.page > project.document.pageCount) {
-      throw new Error('A page is outside the document page range.');
+    if (
+      !Number.isInteger(page.page) ||
+      page.page < 1 ||
+      page.page > project.document.pageCount
+    ) {
+      throw new Error("A page is outside the document page range.");
     }
-    if (pages.has(page.page)) throw new Error('Document contains duplicate pages.');
+    if (pages.has(page.page))
+      throw new Error("Document contains duplicate pages.");
     pages.add(page.page);
   }
 
   const notes = new Map<string, Note>();
   const messages = new Set<string>();
   for (const note of project.notes) {
-    if (notes.has(note.id)) throw new Error('Document contains duplicate note IDs.');
+    if (notes.has(note.id))
+      throw new Error("Document contains duplicate note IDs.");
     notes.set(note.id, note);
     if (note.anchor.page < 1 || note.anchor.page > project.document.pageCount) {
-      throw new Error('A note anchor is outside the document page range.');
+      throw new Error("A note anchor is outside the document page range.");
     }
     for (const message of note.messages) {
-      if (messages.has(message.id)) throw new Error('Document contains duplicate message IDs.');
+      if (messages.has(message.id))
+        throw new Error("Document contains duplicate message IDs.");
       messages.add(message.id);
     }
   }
@@ -298,87 +360,111 @@ function validateReferences(project: Project): void {
   for (const note of project.notes) {
     if (note.parentId) {
       const parent = notes.get(note.parentId);
-      if (!parent) throw new Error('A branch note references a missing parent.');
-      if (note.parentMessageId && !parent.messages.some((message) => message.id === note.parentMessageId)) {
-        throw new Error('A branch note references a missing parent message.');
+      if (!parent)
+        throw new Error("A branch note references a missing parent.");
+      if (
+        note.parentMessageId &&
+        !parent.messages.some((message) => message.id === note.parentMessageId)
+      ) {
+        throw new Error("A branch note references a missing parent message.");
       }
     }
 
     const chain = new Set<string>();
     let cursor: Note | undefined = note;
     while (cursor.parentId) {
-      if (chain.has(cursor.id)) throw new Error('The note tree contains a cycle.');
+      if (chain.has(cursor.id))
+        throw new Error("The note tree contains a cycle.");
       chain.add(cursor.id);
       cursor = notes.get(cursor.parentId);
-      if (!cursor) throw new Error('A branch note references a missing parent.');
+      if (!cursor)
+        throw new Error("A branch note references a missing parent.");
     }
-    if (chain.has(cursor.id)) throw new Error('The note tree contains a cycle.');
+    if (chain.has(cursor.id))
+      throw new Error("The note tree contains a cycle.");
   }
 
   const assetIds = new Set(project.assets.map((asset) => asset.id));
-  if (assetIds.size !== project.assets.length) throw new Error('Project contains duplicate asset IDs.');
+  if (assetIds.size !== project.assets.length)
+    throw new Error("Project contains duplicate asset IDs.");
   const templateIds = new Set(project.templates.map((template) => template.id));
-  if (templateIds.size !== project.templates.length) throw new Error('Project contains duplicate template IDs.');
+  if (templateIds.size !== project.templates.length)
+    throw new Error("Project contains duplicate template IDs.");
 
   for (const note of project.notes) {
-    if (!templateIds.has(note.templateId)) throw new Error('A note references a missing template.');
+    if (!templateIds.has(note.templateId))
+      throw new Error("A note references a missing template.");
     validateTextReferences(note.draft, assetIds);
     if (note.branchQuote) validateTextReferences(note.branchQuote, assetIds);
     for (const assetId of note.draftAssetIds) {
-      if (!assetIds.has(assetId)) throw new Error('A note draft references a missing asset.');
+      if (!assetIds.has(assetId))
+        throw new Error("A note draft references a missing asset.");
     }
     for (const message of note.messages) {
       validateTextReferences(message.content, assetIds);
       if (message.error) validateTextReferences(message.error, assetIds);
       if (message.prompt) validateTextReferences(message.prompt, assetIds);
-      message.sources?.forEach((source) => validateTextReferences(source.text, assetIds));
-      message.history?.forEach((history) => validateTextReferences(history.content, assetIds));
+      message.sources?.forEach((source) =>
+        validateTextReferences(source.text, assetIds),
+      );
+      message.history?.forEach((history) =>
+        validateTextReferences(history.content, assetIds),
+      );
       for (const assetId of message.assetIds) {
-        if (!assetIds.has(assetId)) throw new Error('A message references a missing asset.');
+        if (!assetIds.has(assetId))
+          throw new Error("A message references a missing asset.");
       }
     }
     for (const message of note.inheritedHistory) {
       validateTextReferences(message.content, assetIds);
       for (const assetId of message.assetIds ?? []) {
-        if (!assetIds.has(assetId)) throw new Error('Branch history references a missing asset.');
+        if (!assetIds.has(assetId))
+          throw new Error("Branch history references a missing asset.");
       }
     }
   }
 }
 
 function validateManifest(value: unknown): asserts value is Manifest {
-  assertRecord(value, 'manifest');
-  if (value.format !== 'inkask' || value.formatVersion !== 1) throw new Error('Unsupported InkAsk archive.');
-  assertRecord(value.project, 'project');
+  assertRecord(value, "manifest");
+  if (value.format !== "inkask" || value.formatVersion !== 1)
+    throw new Error("Unsupported InkAsk archive.");
+  assertRecord(value.project, "project");
   const project = value.project;
-  if (project.version !== 1) throw new Error('Unsupported project version.');
-  assertRecord(project.document, 'document');
-  assertString(project.document.id, 'document.id');
-  assertString(project.document.name, 'document.name');
-  assertString(project.document.fingerprint, 'document.fingerprint');
-  assertNumber(project.document.pageCount, 'document.pageCount');
-  assertString(project.document.pdfPath, 'document.pdfPath');
-  if (!Number.isInteger(project.document.pageCount) || project.document.pageCount < 1) {
-    throw new Error('document.pageCount must be a positive integer.');
+  if (project.version !== 1) throw new Error("Unsupported project version.");
+  assertRecord(project.document, "document");
+  assertString(project.document.id, "document.id");
+  assertString(project.document.name, "document.name");
+  assertString(project.document.fingerprint, "document.fingerprint");
+  assertNumber(project.document.pageCount, "document.pageCount");
+  assertString(project.document.pdfPath, "document.pdfPath");
+  if (
+    !Number.isInteger(project.document.pageCount) ||
+    project.document.pageCount < 1
+  ) {
+    throw new Error("document.pageCount must be a positive integer.");
   }
-  for (const key of ['pages', 'notes', 'assets', 'templates'] as const) {
-    if (!Array.isArray(project[key])) throw new Error(`project.${key} must be an array.`);
+  for (const key of ["pages", "notes", "assets", "templates"] as const) {
+    if (!Array.isArray(project[key]))
+      throw new Error(`project.${key} must be an array.`);
   }
-  assertRecord(project.view, 'project.view');
+  assertRecord(project.view, "project.view");
 
   for (const [index, item] of (project.pages as unknown[]).entries()) {
     assertRecord(item, `project.pages[${index}]`);
     assertNumber(item.page, `project.pages[${index}].page`);
     assertString(item.text, `project.pages[${index}].text`);
     assertArray(item.words, `project.pages[${index}].words`);
-    if (!['native', 'ocr'].includes(String(item.source))) throw new Error('Invalid page source.');
-    if (!['pending', 'ready', 'empty', 'error'].includes(String(item.status))) throw new Error('Invalid page status.');
+    if (!["native", "ocr"].includes(String(item.source)))
+      throw new Error("Invalid page source.");
+    if (!["pending", "ready", "empty", "error"].includes(String(item.status)))
+      throw new Error("Invalid page status.");
     assertNumber(item.width, `project.pages[${index}].width`);
     assertNumber(item.height, `project.pages[${index}].height`);
     for (const [wordIndex, word] of item.words.entries()) {
       assertRecord(word, `project.pages[${index}].words[${wordIndex}]`);
-      assertString(word.text, 'word.text');
-      assertRect(word.rect, 'word.rect');
+      assertString(word.text, "word.text");
+      assertRect(word.rect, "word.rect");
     }
   }
 
@@ -387,77 +473,99 @@ function validateManifest(value: unknown): asserts value is Manifest {
     assertString(item.id, `project.notes[${index}].id`);
     assertString(item.title, `project.notes[${index}].title`);
     assertRecord(item.anchor, `project.notes[${index}].anchor`);
-    assertNumber(item.anchor.page, 'note.anchor.page');
-    assertArray(item.anchor.rects, 'note.anchor.rects');
-    item.anchor.rects.forEach((rect, rectIndex) => assertRect(rect, `note.anchor.rects[${rectIndex}]`));
-    assertString(item.anchor.quote, 'note.anchor.quote');
-    assertArray(item.inheritedHistory, 'note.inheritedHistory');
-    requiredBoolean(item.collapsed, 'note.collapsed');
-    assertString(item.task, 'note.task');
-    assertString(item.templateId, 'note.templateId');
-    assertString(item.draft, 'note.draft');
-    assertArray(item.draftAssetIds, 'note.draftAssetIds');
-    assertArray(item.messages, 'note.messages');
-    assertNumber(item.createdAt, 'note.createdAt');
+    assertNumber(item.anchor.page, "note.anchor.page");
+    assertArray(item.anchor.rects, "note.anchor.rects");
+    item.anchor.rects.forEach((rect, rectIndex) =>
+      assertRect(rect, `note.anchor.rects[${rectIndex}]`),
+    );
+    assertString(item.anchor.quote, "note.anchor.quote");
+    assertArray(item.inheritedHistory, "note.inheritedHistory");
+    requiredBoolean(item.collapsed, "note.collapsed");
+    assertString(item.task, "note.task");
+    assertString(item.templateId, "note.templateId");
+    assertString(item.draft, "note.draft");
+    assertArray(item.draftAssetIds, "note.draftAssetIds");
+    assertArray(item.messages, "note.messages");
+    assertNumber(item.createdAt, "note.createdAt");
     for (const history of item.inheritedHistory as unknown[]) {
-      assertRecord(history, 'history message');
-      if (!['user', 'assistant'].includes(String(history.role))) throw new Error('Invalid history role.');
-      assertString(history.content, 'history.content');
-      if (history.assetIds !== undefined) assertArray(history.assetIds, 'history.assetIds');
+      assertRecord(history, "history message");
+      if (!["user", "assistant"].includes(String(history.role)))
+        throw new Error("Invalid history role.");
+      assertString(history.content, "history.content");
+      if (history.assetIds !== undefined)
+        assertArray(history.assetIds, "history.assetIds");
     }
     for (const [messageIndex, itemMessage] of item.messages.entries()) {
-      assertRecord(itemMessage, `project.notes[${index}].messages[${messageIndex}]`);
-      assertString(itemMessage.id, 'message.id');
-      if (!['user', 'assistant'].includes(String(itemMessage.role))) throw new Error('Invalid message role.');
-      assertString(itemMessage.content, 'message.content');
-      assertArray(itemMessage.assetIds, 'message.assetIds');
-      if (!['complete', 'streaming', 'stopped', 'error'].includes(String(itemMessage.status))) {
-        throw new Error('Invalid message status.');
+      assertRecord(
+        itemMessage,
+        `project.notes[${index}].messages[${messageIndex}]`,
+      );
+      assertString(itemMessage.id, "message.id");
+      if (!["user", "assistant"].includes(String(itemMessage.role)))
+        throw new Error("Invalid message role.");
+      assertString(itemMessage.content, "message.content");
+      assertArray(itemMessage.assetIds, "message.assetIds");
+      if (
+        !["complete", "streaming", "stopped", "error"].includes(
+          String(itemMessage.status),
+        )
+      ) {
+        throw new Error("Invalid message status.");
       }
-      assertNumber(itemMessage.createdAt, 'message.createdAt');
+      assertNumber(itemMessage.createdAt, "message.createdAt");
     }
   }
 
   const assetIds = new Set<string>();
   for (const [index, item] of (project.assets as unknown[]).entries()) {
     assertRecord(item, `project.assets[${index}]`);
-    assertString(item.id, 'asset.id');
-    if (assetIds.has(item.id)) throw new Error('Project contains duplicate asset IDs.');
+    assertString(item.id, "asset.id");
+    if (assetIds.has(item.id))
+      throw new Error("Project contains duplicate asset IDs.");
     assetIds.add(item.id);
-    assertString(item.name, 'asset.name');
-    assertString(item.mime, 'asset.mime');
-    if (!item.mime.startsWith('image/')) throw new Error('Archive assets must be images.');
-    assertString(item.archivePath, 'asset.archivePath');
+    assertString(item.name, "asset.name");
+    assertString(item.mime, "asset.mime");
+    if (!item.mime.startsWith("image/"))
+      throw new Error("Archive assets must be images.");
+    assertString(item.archivePath, "asset.archivePath");
     if (item.source !== undefined) {
-      assertRecord(item.source, 'asset.source');
-      assertNumber(item.source.page, 'asset.source.page');
-      if (item.source.rect !== undefined) assertRect(item.source.rect, 'asset.source.rect');
+      assertRecord(item.source, "asset.source");
+      assertNumber(item.source.page, "asset.source.page");
+      if (item.source.rect !== undefined)
+        assertRect(item.source.rect, "asset.source.rect");
     }
   }
 
   for (const [index, item] of (project.templates as unknown[]).entries()) {
     assertRecord(item, `project.templates[${index}]`);
-    assertString(item.id, 'template.id');
-    assertString(item.name, 'template.name');
-    if (!['explain', 'formula', 'summarize', 'translate', 'custom'].includes(String(item.task))) {
-      throw new Error('Invalid template task.');
+    assertString(item.id, "template.id");
+    assertString(item.name, "template.name");
+    if (
+      !["explain", "formula", "summarize", "translate", "custom"].includes(
+        String(item.task),
+      )
+    ) {
+      throw new Error("Invalid template task.");
     }
-    assertString(item.body, 'template.body');
-    assertNumber(item.version, 'template.version');
+    assertString(item.body, "template.body");
+    assertNumber(item.version, "template.version");
   }
 
-  assertNumber(project.view.page, 'view.page');
-  assertNumber(project.view.scale, 'view.scale');
-  assertNumber(project.view.rotation, 'view.rotation');
+  assertNumber(project.view.page, "view.page");
+  assertNumber(project.view.scale, "view.scale");
+  assertNumber(project.view.rotation, "view.rotation");
 }
 
-function requiredBoolean(value: unknown, name: string): asserts value is boolean {
-  if (typeof value !== 'boolean') throw new Error(`${name} must be a boolean.`);
+function requiredBoolean(
+  value: unknown,
+  name: string,
+): asserts value is boolean {
+  if (typeof value !== "boolean") throw new Error(`${name} must be a boolean.`);
 }
 
 export async function importProject(file: Blob): Promise<Project> {
   if (file.size <= 0 || file.size > ARCHIVE_LIMITS.archiveBytes) {
-    throw new Error('Archive is empty or exceeds the size limit.');
+    throw new Error("Archive is empty or exceeds the size limit.");
   }
   const archive = new Uint8Array(await file.arrayBuffer());
   let extractedBytes = 0;
@@ -466,71 +574,77 @@ export async function importProject(file: Blob): Promise<Project> {
   try {
     files = unzipSync(archive, {
       filter: (entry) => {
-        if (entry.name.startsWith('/') || entry.name.includes('..')) throw new Error('Unsafe archive path.');
-        if (entryNames.has(entry.name)) throw new Error('Archive contains duplicate entries.');
+        if (entry.name.startsWith("/") || entry.name.includes(".."))
+          throw new Error("Unsafe archive path.");
+        if (entryNames.has(entry.name))
+          throw new Error("Archive contains duplicate entries.");
         entryNames.add(entry.name);
         extractedBytes += entry.originalSize;
-        if (extractedBytes > ARCHIVE_LIMITS.extractedBytes) throw new Error('Archive expands beyond the size limit.');
+        if (extractedBytes > ARCHIVE_LIMITS.extractedBytes)
+          throw new Error("Archive expands beyond the size limit.");
         return true;
       },
     });
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Archive')) throw error;
-    if (error instanceof Error && error.message === 'Unsafe archive path.') throw error;
-    throw new Error('Archive is not a valid InkAsk ZIP file.');
+    if (error instanceof Error && error.message.startsWith("Archive"))
+      throw error;
+    if (error instanceof Error && error.message === "Unsafe archive path.")
+      throw error;
+    throw new Error("Archive is not a valid InkAsk ZIP file.");
   }
 
-  const manifestBytes = files['manifest.json'];
-  if (!manifestBytes) throw new Error('Archive manifest is missing.');
+  const manifestBytes = files["manifest.json"];
+  if (!manifestBytes) throw new Error("Archive manifest is missing.");
   let raw: unknown;
   try {
     raw = JSON.parse(strFromU8(manifestBytes));
   } catch {
-    throw new Error('Archive manifest is not valid JSON.');
+    throw new Error("Archive manifest is not valid JSON.");
   }
   rejectPrototypeKeys(raw);
   validateManifest(raw);
   const manifest = raw;
   const pdfBytes = files[manifest.project.document.pdfPath];
   if (!pdfBytes?.byteLength || pdfBytes.byteLength > ARCHIVE_LIMITS.pdfBytes) {
-    throw new Error('Archive PDF is missing or exceeds the size limit.');
+    throw new Error("Archive PDF is missing or exceeds the size limit.");
   }
-  if (strFromU8(pdfBytes.subarray(0, 5)) !== '%PDF-') {
-    throw new Error('Archive document is not a PDF.');
+  if (strFromU8(pdfBytes.subarray(0, 5)) !== "%PDF-") {
+    throw new Error("Archive document is not a PDF.");
   }
   if (manifest.project.assets.length > ARCHIVE_LIMITS.assets) {
-    throw new Error('Archive contains too many assets.');
+    throw new Error("Archive contains too many assets.");
   }
 
   const assets: Asset[] = manifest.project.assets.map((asset) => {
     const data = files[asset.archivePath];
     if (!data) throw new Error(`Asset ${asset.name} is missing.`);
-    if (data.byteLength > ARCHIVE_LIMITS.assetBytes) throw new Error(`Asset ${asset.name} exceeds the size limit.`);
+    if (data.byteLength > ARCHIVE_LIMITS.assetBytes)
+      throw new Error(`Asset ${asset.name} exceeds the size limit.`);
     const { archivePath: _archivePath, ...metadata } = asset;
     return { ...metadata, data: blobFrom(data, asset.mime) };
   });
   const { pdfPath, ...document } = manifest.project.document;
   const project: Project = {
     ...manifest.project,
-    document: { ...document, pdf: blobFrom(pdfBytes, 'application/pdf') },
+    document: { ...document, pdf: blobFrom(pdfBytes, "application/pdf") },
     assets,
   } as Project;
   validateReferences(project);
   const imported = remapProject(project);
   for (const note of imported.notes) {
     for (const message of note.messages) {
-      if (message.status === 'streaming') message.status = 'stopped';
+      if (message.status === "streaming") message.status = "stopped";
     }
   }
   return imported;
 }
 
 function exportMessage(message: Message, depth: number): string {
-  const indent = '  '.repeat(depth);
+  const indent = "  ".repeat(depth);
   const sourceLinks = message.sources?.length
-    ? `\n${indent}- 来源：${message.sources.map((source) => `[${source.id}]（第 ${source.page} 页）`).join('、')}`
-    : '';
-  return `${indent}- ${message.role === 'user' ? '用户' : 'AI'}：${message.content.replace(/\n/g, `\n${indent}  `)}${sourceLinks}`;
+    ? `\n${indent}- 来源：${message.sources.map((source) => `[${source.id}]（第 ${source.page} 页）`).join("、")}`
+    : "";
+  return `${indent}- ${message.role === "user" ? "用户" : "AI"}：${message.content.replace(/\n/g, `\n${indent}  `)}${sourceLinks}`;
 }
 
 export function exportMarkdown(project: Project): string {
@@ -540,32 +654,39 @@ export function exportMarkdown(project: Project): string {
     siblings.push(note);
     notesByParent.set(note.parentId, siblings);
   }
-  for (const siblings of notesByParent.values()) siblings.sort((a, b) => a.createdAt - b.createdAt);
+  for (const siblings of notesByParent.values())
+    siblings.sort((a, b) => a.createdAt - b.createdAt);
 
-  const lines = [`# ${project.document.name}`, '', `> InkAsk 项目导出 · ${project.document.pageCount} 页`, ''];
+  const lines = [
+    `# ${project.document.name}`,
+    "",
+    `> InkAsk 项目导出 · ${project.document.pageCount} 页`,
+    "",
+  ];
   const walk = (parentId: string | undefined, depth: number): void => {
     for (const note of notesByParent.get(parentId) ?? []) {
-      const heading = '#'.repeat(Math.min(depth + 2, 6));
-      lines.push(`${heading} ${note.title}`, '');
+      const heading = "#".repeat(Math.min(depth + 2, 6));
+      lines.push(`${heading} ${note.title}`, "");
       lines.push(`- 定位：第 ${note.anchor.page} 页`);
       if (note.anchor.quote) lines.push(`- 原文：${note.anchor.quote}`);
       if (note.branchQuote) lines.push(`- 分支引用：${note.branchQuote}`);
-      lines.push('');
-      for (const message of note.messages) lines.push(exportMessage(message, 0));
-      lines.push('');
+      lines.push("");
+      for (const message of note.messages)
+        lines.push(exportMessage(message, 0));
+      lines.push("");
       walk(note.id, depth + 1);
     }
   };
   walk(undefined, 0);
-  return `${lines.join('\n').trim()}\n`;
+  return `${lines.join("\n").trim()}\n`;
 }
 
 export async function blobToDataUrl(blob: Blob): Promise<string> {
   const buffer = await blob.arrayBuffer();
-  let binary = '';
+  let binary = "";
   const view = new Uint8Array(buffer);
   for (let offset = 0; offset < view.length; offset += 0x8000) {
     binary += String.fromCharCode(...view.subarray(offset, offset + 0x8000));
   }
-  return `data:${blob.type || 'application/octet-stream'};base64,${btoa(binary)}`;
+  return `data:${blob.type || "application/octet-stream"};base64,${btoa(binary)}`;
 }
