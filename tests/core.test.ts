@@ -113,10 +113,16 @@ describe('prompt templates and context', () => {
     expect(result.coverage).toContain('尚未识别 1 页');
     expect(result.coverage).toContain('已识别但无可检索文字 1 页');
     expect(result.sources.length).toBeGreaterThan(0);
+    expect(result.sources[0]).toMatchObject({ id: 'S1', page: 1 });
+    expect(result.sources[0].text).toContain('机器学习模型需要训练数据');
     expect(result.sources.every((source) => /^S\d+$/.test(source.id))).toBe(true);
     expect(result.prompt).toContain(`[${result.sources[0].id}]`);
-    expect(result.prompt).toContain('祖先上下文');
-    expect(result.prompt).toContain('当前便签问题');
+    expect(result.prompt).not.toContain('祖先上下文');
+    expect(result.prompt).not.toContain('当前便签问题');
+    expect(result.history.map((item) => item.content)).toEqual(['祖先上下文', '当前便签问题']);
+    expect(result.prompt).not.toMatch(
+      /\{\{(?:task|document_title|page_number|coverage|selected_text|context_with_source_ids|branch_quote|question|attachment_descriptions)\}\}/,
+    );
   });
 
   it('trims retrieval then oldest history while retaining protected inputs', () => {
@@ -140,11 +146,110 @@ describe('prompt templates and context', () => {
     });
 
     expect(result.truncated).toBe(true);
-    expect(result.sources.length).toBeLessThan(1);
-    expect(result.history.length).toBeLessThan(3);
+    expect(result.sources.map((source) => source.id)).toEqual(['S1']);
+    expect(result.history).toHaveLength(0);
     expect(result.prompt).toContain('机器学习模型需要训练数据');
     expect(result.prompt).toContain('请解释损失函数');
     expect(result.prompt).toContain('这段分支回答必须保留');
+    expect(result.prompt).not.toContain('最早历史');
+    expect(result.prompt).not.toContain('当前消息');
+  });
+
+  it('interpolates editable variables, preserves unknown placeholders, and restores required fields', () => {
+    const project = projectFixture();
+    const selected = note({
+      branchQuote: '被追问的完整回答',
+      inheritedHistory: [
+        { role: 'user', content: '不应重新嵌入 prompt 的历史甲' },
+        { role: 'assistant', content: '不应重新嵌入 prompt 的历史乙' },
+      ],
+    });
+    project.notes = [selected];
+    const custom: PromptTemplate = {
+      id: 'user-template',
+      name: '用户模板',
+      task: 'custom',
+      body: '文档 {{ document_title }}，第 {{page_number}} 页。保留 {{unknown_name}}。',
+      version: 1,
+    };
+
+    const result = buildContext({
+      project,
+      note: selected,
+      question: '这个结论为什么成立？',
+      template: custom,
+    });
+
+    expect(result.prompt).toContain('文档 机器学习教材.pdf，第 1 页');
+    expect(result.prompt).toContain('{{unknown_name}}');
+    expect(result.prompt).toContain('【选中的原文】');
+    expect(result.prompt).toContain('【附近内容与相关文档片段】');
+    expect(result.prompt).toContain('[S1] 第 1 页');
+    expect(result.prompt).toContain('【用户问题】\n这个结论为什么成立？');
+    expect(result.prompt).toContain('【分支所针对的回答】\n被追问的完整回答');
+    expect(result.prompt).not.toContain('不应重新嵌入 prompt');
+  });
+
+  it('describes a native PDF without text as OCR-eligible and keeps S1 without keyword matches', () => {
+    const project = projectFixture();
+    project.document.pageCount = 1;
+    project.pages = [
+      {
+        page: 1,
+        text: '',
+        words: [],
+        source: 'native',
+        status: 'empty',
+        width: 600,
+        height: 800,
+      },
+    ];
+    const selected = note({ anchor: { page: 1, rects: [[1, 2, 3, 4]], quote: '扫描图中的公式' } });
+    project.notes = [selected];
+
+    const result = buildContext({
+      project,
+      note: selected,
+      question: 'xyzzy 完全无关',
+      template: project.templates[0],
+    });
+
+    expect(result.coverage).toContain('未提取到文字、可按需 OCR 1 页');
+    expect(result.coverage).not.toContain('已识别但无可检索文字');
+    expect(result.sources).toEqual([
+      expect.objectContaining({ id: 'S1', page: 1, text: '扫描图中的公式' }),
+    ]);
+  });
+
+  it('caps API history at 40 messages and marks implicit image truncation', () => {
+    const project = projectFixture();
+    project.assets = Array.from({ length: 21 }, (_, index) => ({
+      id: `image-${index}`,
+      name: `image-${index}.png`,
+      mime: 'image/png',
+      data: new Blob(['x']),
+    }));
+    const selected = note({
+      draftAssetIds: project.assets.map((asset) => asset.id),
+      inheritedHistory: Array.from({ length: 45 }, (_, index) => ({
+        role: index % 2 ? 'assistant' : 'user',
+        content: `历史 ${index}`,
+      })),
+    });
+    project.notes = [selected];
+
+    const result = buildContext({
+      project,
+      note: selected,
+      question: '继续',
+      template: project.templates[0],
+      budget: 1_000_000,
+    });
+
+    expect(result.history).toHaveLength(40);
+    expect(result.history[0].content).toBe('历史 5');
+    expect(result.history.at(-1)?.content).toBe('历史 44');
+    expect(result.truncated).toBe(true);
   });
 });
 
@@ -180,6 +285,8 @@ describe('nested branches', () => {
       '二级回答',
     ]);
     expect(level3.inheritedHistory.some((item) => item.content === '另一个分支')).toBe(false);
+    expect(level3.branchQuote).toBe('二级回答');
+    expect(level3.templateId).toBe('template-custom-v1');
 
     root.messages[0].content = '根消息后来被修改';
     expect(level3.inheritedHistory[0].content).toBe('根问题');
@@ -204,9 +311,9 @@ describe('project archive', () => {
       id: 'note-old',
       draftAssetIds: ['asset-old'],
       messages: [
-        message('question-old', 'user', '看图 ![figure](inkask://asset/asset-old)'),
+        message('question-old', 'user', '看图 ![figure](asset:asset-old)'),
         {
-          ...message('answer-old', 'assistant', '回答中也有 ![again](inkask://asset/asset-old)'),
+          ...message('answer-old', 'assistant', '回答中也有 ![again](inkask://asset/asset-old)', 'streaming'),
           assetIds: ['asset-old'],
           sources: [{ id: 'S1', page: 1, text: '来源' }],
         },
@@ -231,7 +338,11 @@ describe('project archive', () => {
     expect(imported.assets[0].id).not.toBe('asset-old');
     expect(await imported.document.pdf.text()).toBe('%PDF-1.7 fixture');
     expect(Array.from(new Uint8Array(await imported.assets[0].data.arrayBuffer()))).toEqual([1, 2, 3, 4]);
-    expect(imported.notes[0].messages[0].content).toContain(`inkask://asset/${imported.assets[0].id}`);
+    expect(imported.notes[0].messages[0].content).toContain(`asset:${imported.assets[0].id}`);
+    expect(imported.notes[0].messages[1].content).toContain(
+      `inkask://asset/${imported.assets[0].id}`,
+    );
+    expect(imported.notes[0].messages[1].status).toBe('stopped');
     expect(imported.notes[1].parentId).toBe(imported.notes[0].id);
     expect(imported.notes[1].parentMessageId).toBe(imported.notes[0].messages[1].id);
     expect(imported.notes[1].inheritedHistory.map((item) => item.content).join('\n')).toContain(imported.assets[0].id);
@@ -261,6 +372,15 @@ describe('project archive', () => {
       return JSON.stringify(manifest);
     });
     await expect(importProject(missingAsset)).rejects.toThrow(/Asset figure\.png is missing/);
+
+    const missingAssetUri = await rewrite((text) => {
+      const manifest = JSON.parse(text);
+      manifest.project.notes[0].messages[0].content = '![missing](asset:absent-asset)';
+      return JSON.stringify(manifest);
+    });
+    await expect(importProject(missingAssetUri)).rejects.toThrow(
+      /Content references missing asset absent-asset/,
+    );
     await expect(importProject(new Blob(['not a zip']))).rejects.toThrow(/valid InkAsk ZIP/);
   });
 });

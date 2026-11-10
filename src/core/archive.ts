@@ -138,7 +138,13 @@ function rejectPrototypeKeys(value: unknown, path = 'manifest'): void {
 }
 
 function remapText(value: string, ids: Map<string, string>): string {
-  let output = value;
+  let output = value.replace(
+    /(inkask:\/\/asset\/|asset:)([A-Za-z0-9._~-]+)/g,
+    (match, prefix: string, assetId: string) => {
+      const replacement = ids.get(assetId);
+      return replacement ? `${prefix}${replacement}` : match;
+    },
+  );
   for (const [oldId, newId] of ids) {
     if (oldId && oldId !== newId) output = output.split(oldId).join(newId);
   }
@@ -259,6 +265,12 @@ function remapProject(project: Project): Project {
   };
 }
 
+function validateTextReferences(value: string, assetIds: Set<string>): void {
+  for (const match of value.matchAll(/(?:inkask:\/\/asset\/|asset:)([A-Za-z0-9._~-]+)/g)) {
+    if (!assetIds.has(match[1])) throw new Error(`Content references missing asset ${match[1]}.`);
+  }
+}
+
 function validateReferences(project: Project): void {
   const pages = new Set<number>();
   for (const page of project.pages) {
@@ -310,15 +322,23 @@ function validateReferences(project: Project): void {
 
   for (const note of project.notes) {
     if (!templateIds.has(note.templateId)) throw new Error('A note references a missing template.');
+    validateTextReferences(note.draft, assetIds);
+    if (note.branchQuote) validateTextReferences(note.branchQuote, assetIds);
     for (const assetId of note.draftAssetIds) {
       if (!assetIds.has(assetId)) throw new Error('A note draft references a missing asset.');
     }
     for (const message of note.messages) {
+      validateTextReferences(message.content, assetIds);
+      if (message.error) validateTextReferences(message.error, assetIds);
+      if (message.prompt) validateTextReferences(message.prompt, assetIds);
+      message.sources?.forEach((source) => validateTextReferences(source.text, assetIds));
+      message.history?.forEach((history) => validateTextReferences(history.content, assetIds));
       for (const assetId of message.assetIds) {
         if (!assetIds.has(assetId)) throw new Error('A message references a missing asset.');
       }
     }
     for (const message of note.inheritedHistory) {
+      validateTextReferences(message.content, assetIds);
       for (const assetId of message.assetIds ?? []) {
         if (!assetIds.has(assetId)) throw new Error('Branch history references a missing asset.');
       }
@@ -496,7 +516,13 @@ export async function importProject(file: Blob): Promise<Project> {
     assets,
   } as Project;
   validateReferences(project);
-  return remapProject(project);
+  const imported = remapProject(project);
+  for (const note of imported.notes) {
+    for (const message of note.messages) {
+      if (message.status === 'streaming') message.status = 'stopped';
+    }
+  }
+  return imported;
 }
 
 function exportMessage(message: Message, depth: number): string {

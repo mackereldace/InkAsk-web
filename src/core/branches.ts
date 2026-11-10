@@ -25,6 +25,28 @@ function historyThrough(note: Note, parentMessageId: string): HistoryMessage[] {
   return snapshot;
 }
 
+function branchTemplateId(project: Project): string {
+  const custom = project.templates.find((template) => template.task === 'custom');
+  if (!custom) throw new Error('No custom prompt template is available for this branch.');
+  return custom.id;
+}
+
+function branchQuoteFor(note: Note, parentMessageId: string, quote: string): string {
+  const explicit = quote.trim();
+  if (explicit) return explicit;
+  const messages: Note['messages'] = [];
+  for (const candidate of note.messages) {
+    messages.push(candidate);
+    if (candidate.id === parentMessageId) break;
+  }
+  const target = messages.at(-1);
+  if (target?.role === 'assistant') return target.content.trim();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'assistant') return messages[index].content.trim();
+  }
+  return '';
+}
+
 export function createBranch(
   project: Project,
   parentNote: Note,
@@ -33,7 +55,7 @@ export function createBranch(
 ): Note {
   const note = project.notes.find((candidate) => candidate.id === parentNote.id);
   if (!note) throw new Error('Parent note does not belong to this project.');
-  const cleanQuote = quote.trim();
+  const cleanQuote = branchQuoteFor(note, parentMessageId, quote);
   return {
     id: id(),
     title: cleanQuote ? `追问 · ${cleanQuote.slice(0, 28)}` : '分支追问',
@@ -48,7 +70,7 @@ export function createBranch(
     inheritedHistory: historyThrough(note, parentMessageId),
     collapsed: false,
     task: 'custom',
-    templateId: note.templateId,
+    templateId: branchTemplateId(project),
     draft: cleanQuote ? '请进一步解释这段回答。' : '请继续说明。',
     draftAssetIds: [],
     messages: [],
