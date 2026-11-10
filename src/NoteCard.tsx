@@ -304,12 +304,16 @@ export default function NoteCard(props: Props) {
                 {m.role === "assistant" && m.status !== "streaming" && (
                   <div className="message-actions">
                     <button
-                      onClick={() => {
+                      onClick={(e) => {
                         const s = window.getSelection();
+                        const body = e.currentTarget
+                          .closest(".message")
+                          ?.querySelector(".message-body");
                         const quote =
                           s &&
                           !s.isCollapsed &&
-                          answer.current?.contains(s.anchorNode)
+                          body?.contains(s.anchorNode) &&
+                          body.contains(s.focusNode)
                             ? s.toString().trim()
                             : undefined;
                         props.onBranch(note, m, quote);
@@ -326,12 +330,13 @@ export default function NoteCard(props: Props) {
                       <Copy size={12} />
                       复制
                     </button>
-                    {(m.status === "error" || m.status === "stopped") && (
-                      <button onClick={() => props.onRetry(note.id)}>
-                        <RotateCcw size={12} />
-                        重试
-                      </button>
-                    )}
+                    {(m.status === "error" || m.status === "stopped") &&
+                      m.id === note.messages.at(-1)?.id && (
+                        <button onClick={() => props.onRetry(note.id)}>
+                          <RotateCcw size={12} />
+                          重试
+                        </button>
+                      )}
                     {m.prompt && (
                       <details>
                         <summary>提问记录</summary>

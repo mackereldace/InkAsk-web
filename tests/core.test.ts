@@ -446,10 +446,33 @@ describe("project archive", () => {
     await expect(importProject(missingAssetUri)).rejects.toThrow(
       /Content references missing asset absent-asset/,
     );
+    const badAnchor = await rewrite((text) => {
+      const m = JSON.parse(text);
+      m.project.notes[0].anchor.rects = [];
+      return JSON.stringify(m);
+    });
+    await expect(importProject(badAnchor)).rejects.toThrow(/anchor rectangle/);
+    const badSources = await rewrite((text) => {
+      const m = JSON.parse(text);
+      m.project.notes[0].messages[0].sources = "invalid";
+      return JSON.stringify(m);
+    });
+    await expect(importProject(badSources)).rejects.toThrow(/message.sources/);
     await expect(importProject(new Blob(["not a zip"]))).rejects.toThrow(
       /valid InkAsk ZIP/,
     );
   });
+});
+
+it("preserves ordinary text that happens to contain an old ID", async () => {
+  const project = projectFixture();
+  const n = note({ id: "note-old" });
+  project.document.name = "note-old.pdf";
+  n.anchor.quote = "The term note-old is ordinary quoted text.";
+  project.notes = [n];
+  const imported = await importProject(await exportProject(project));
+  expect(imported.document.name).toBe("note-old.pdf");
+  expect(imported.notes[0].anchor.quote).toBe(n.anchor.quote);
 });
 
 describe("IndexedDB persistence", () => {

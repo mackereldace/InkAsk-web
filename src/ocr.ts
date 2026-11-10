@@ -16,7 +16,9 @@ export async function recognizePage(
   page: PDFPageProxy,
   rect: Rect | undefined,
   onProgress: (n: number) => void,
+  rotation = 0,
 ): Promise<PageText> {
+  const jobGeneration = generation;
   report = onProgress;
   if (!worker) {
     const current = generation;
@@ -28,15 +30,24 @@ export async function recognizePage(
         if (m.status === "recognizing text") report(m.progress);
       },
     });
-    const created = await preparing;
+    let created: Worker;
+    try {
+      created = await preparing;
+    } catch (e) {
+      if (current === generation) preparing = undefined;
+      throw e;
+    }
     if (current !== generation) {
       await created.terminate();
       throw new Error("已取消识别");
     }
     worker = created;
   }
-  const image = await renderImage(page, rect);
-  const result = await worker.recognize(image.blob, {}, { blocks: true });
+  const engine = worker;
+  const image = await renderImage(page, rect, rotation);
+  if (jobGeneration !== generation) throw new Error("已取消识别");
+  const result = await engine.recognize(image.blob, {}, { blocks: true });
+  if (jobGeneration !== generation) throw new Error("已取消识别");
   const words: WordBox[] = [];
   for (const block of result.data.blocks ?? [])
     for (const paragraph of block.paragraphs)

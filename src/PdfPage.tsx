@@ -59,7 +59,10 @@ export default function PdfPage({
       try {
         const pdfPage = await pdf.getPage(page);
         if (!alive) return;
-        const viewport = pdfPage.getViewport({ scale, rotation });
+        const viewport = pdfPage.getViewport({
+          scale,
+          rotation: (pdfPage.rotate + rotation) % 360,
+        });
         setVp(viewport);
         sizeCallback.current({
           width: viewport.width,

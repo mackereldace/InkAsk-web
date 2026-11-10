@@ -130,6 +130,8 @@ function assertRect(value: unknown, name: string): asserts value is Rect {
   ) {
     throw new Error(`${name} must be a four-number rectangle.`);
   }
+  if (value[2] <= value[0] || value[3] <= value[1])
+    throw new Error(`${name} must have positive dimensions.`);
 }
 
 function rejectPrototypeKeys(value: unknown, path = "manifest"): void {
@@ -149,17 +151,13 @@ function rejectPrototypeKeys(value: unknown, path = "manifest"): void {
 }
 
 function remapText(value: string, ids: Map<string, string>): string {
-  let output = value.replace(
+  return value.replace(
     /(inkask:\/\/asset\/|asset:)([A-Za-z0-9._~-]+)/g,
     (match, prefix: string, assetId: string) => {
       const replacement = ids.get(assetId);
       return replacement ? `${prefix}${replacement}` : match;
     },
   );
-  for (const [oldId, newId] of ids) {
-    if (oldId && oldId !== newId) output = output.split(oldId).join(newId);
-  }
-  return output;
 }
 
 function remapAssetIds(
@@ -359,6 +357,8 @@ function validateReferences(project: Project): void {
 
   for (const note of project.notes) {
     if (note.parentId) {
+      if (!note.parentMessageId)
+        throw new Error("A branch note requires a parent message.");
       const parent = notes.get(note.parentId);
       if (!parent)
         throw new Error("A branch note references a missing parent.");
@@ -475,6 +475,8 @@ function validateManifest(value: unknown): asserts value is Manifest {
     assertRecord(item.anchor, `project.notes[${index}].anchor`);
     assertNumber(item.anchor.page, "note.anchor.page");
     assertArray(item.anchor.rects, "note.anchor.rects");
+    if (!item.anchor.rects.length)
+      throw new Error("A note must have an anchor rectangle.");
     item.anchor.rects.forEach((rect, rectIndex) =>
       assertRect(rect, `note.anchor.rects[${rectIndex}]`),
     );
@@ -482,6 +484,12 @@ function validateManifest(value: unknown): asserts value is Manifest {
     assertArray(item.inheritedHistory, "note.inheritedHistory");
     requiredBoolean(item.collapsed, "note.collapsed");
     assertString(item.task, "note.task");
+    if (
+      !["explain", "formula", "summarize", "translate", "custom"].includes(
+        item.task,
+      )
+    )
+      throw new Error("Invalid note task.");
     assertString(item.templateId, "note.templateId");
     assertString(item.draft, "note.draft");
     assertArray(item.draftAssetIds, "note.draftAssetIds");
@@ -513,6 +521,40 @@ function validateManifest(value: unknown): asserts value is Manifest {
         throw new Error("Invalid message status.");
       }
       assertNumber(itemMessage.createdAt, "message.createdAt");
+      itemMessage.assetIds.forEach((id) =>
+        assertString(id, "message asset ID"),
+      );
+      if (itemMessage.prompt !== undefined)
+        assertString(itemMessage.prompt, "message.prompt");
+      if (itemMessage.error !== undefined)
+        assertString(itemMessage.error, "message.error");
+      if (itemMessage.sources !== undefined) {
+        assertArray(itemMessage.sources, "message.sources");
+        for (const source of itemMessage.sources) {
+          assertRecord(source, "source");
+          assertString(source.id, "source.id");
+          assertString(source.text, "source.text");
+          assertNumber(source.page, "source.page");
+          if (
+            !Number.isInteger(source.page) ||
+            source.page < 1 ||
+            source.page > project.document.pageCount
+          )
+            throw new Error("Invalid source page.");
+        }
+      }
+      if (itemMessage.history !== undefined) {
+        assertArray(itemMessage.history, "message.history");
+        for (const history of itemMessage.history)
+          validateHistoryMessage(history);
+      }
+      if (itemMessage.template !== undefined) {
+        assertRecord(itemMessage.template, "message.template");
+        assertString(itemMessage.template.id, "template.id");
+        assertString(itemMessage.template.name, "template.name");
+        assertString(itemMessage.template.body, "template.body");
+        assertNumber(itemMessage.template.version, "template.version");
+      }
     }
   }
 
@@ -554,6 +596,28 @@ function validateManifest(value: unknown): asserts value is Manifest {
   assertNumber(project.view.page, "view.page");
   assertNumber(project.view.scale, "view.scale");
   assertNumber(project.view.rotation, "view.rotation");
+  if (!(project.templates as unknown[]).length)
+    throw new Error("At least one prompt template is required.");
+  if (
+    !Number.isInteger(project.view.page) ||
+    project.view.page < 1 ||
+    project.view.page > project.document.pageCount ||
+    project.view.scale < 0.4 ||
+    project.view.scale > 2 ||
+    ![0, 90, 180, 270].includes(project.view.rotation)
+  )
+    throw new Error("Invalid document view.");
+}
+
+function validateHistoryMessage(history: unknown) {
+  assertRecord(history, "history message");
+  if (!["user", "assistant"].includes(String(history.role)))
+    throw new Error("Invalid history role.");
+  assertString(history.content, "history.content");
+  if (history.assetIds !== undefined) {
+    assertArray(history.assetIds, "history.assetIds");
+    history.assetIds.forEach((id) => assertString(id, "history asset ID"));
+  }
 }
 
 function requiredBoolean(

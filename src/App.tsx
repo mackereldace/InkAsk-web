@@ -101,6 +101,7 @@ export default function App() {
   const projectRef = useRef<Project | undefined>(undefined),
     pdfRef = useRef<PDFDocumentProxy | undefined>(undefined),
     revision = useRef(0),
+    savedRevision = useRef(0),
     timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
     queue = useRef(Promise.resolve()),
     controllers = useRef(new Map<string, AbortController>()),
@@ -141,6 +142,7 @@ export default function App() {
         try {
           await saveProject(p);
           if (rev === revision.current) {
+            savedRevision.current = rev;
             setSaved("已保存在本机");
             setSaveFailed(false);
           }
@@ -162,14 +164,25 @@ export default function App() {
   }, [project, persist]);
   useEffect(() => {
     const before = (e: BeforeUnloadEvent) => {
-      if (saveFailed || controllers.current.size) {
+      if (
+        saveFailed ||
+        controllers.current.size ||
+        savedRevision.current !== revision.current
+      ) {
         e.preventDefault();
         e.returnValue = "";
       }
       void persist().catch(() => {});
     };
     window.addEventListener("beforeunload", before);
-    return () => window.removeEventListener("beforeunload", before);
+    const background = () => {
+      if (document.visibilityState === "hidden") void persist().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", background);
+    return () => {
+      window.removeEventListener("beforeunload", before);
+      document.removeEventListener("visibilitychange", background);
+    };
   }, [persist, saveFailed]);
   useEffect(() => {
     void fetch("/api/status")
@@ -195,6 +208,16 @@ export default function App() {
   }, []);
   async function refresh() {
     setDocuments(await listDocuments());
+  }
+  async function openExisting(id: string) {
+    if (projectRef.current?.document.id === id) return;
+    try {
+      await persist();
+      const p = await loadProject(id);
+      if (p) await activate(p);
+    } catch (e) {
+      setNotice(err(e));
+    }
   }
   async function activate(p: Project) {
     const epoch = ++openEpoch.current;
@@ -240,6 +263,8 @@ export default function App() {
           const text = await extractPage(d, page);
           if (epoch === openEpoch.current)
             update((p) => {
+              if (p.pages.some((x) => x.page === page && x.source === "ocr"))
+                return;
               p.pages = p.pages.filter((x) => x.page !== page);
               p.pages.push(text);
             });
@@ -278,11 +303,8 @@ export default function App() {
         .join("");
       const existing = documents.find((d) => d.fingerprint === fingerprint);
       if (existing) {
-        const p = await loadProject(existing.id);
-        if (p) {
-          await activate(p);
-          return;
-        }
+        await openExisting(existing.id);
+        return;
       }
       const p: Project = {
         version: 1,
@@ -317,6 +339,8 @@ export default function App() {
     });
     setSelection(undefined);
     setRegion(false);
+    setFocusId(undefined);
+    setActiveId(undefined);
   }
   function focus(id: string) {
     const n = projectRef.current?.notes.find((n) => n.id === id);
@@ -373,6 +397,7 @@ export default function App() {
       const { blob } = await renderImage(
         await d.getPage(note.anchor.page),
         rect,
+        projectRef.current?.view.rotation ?? 0,
       );
       if (projectRef.current?.document.id !== documentId) return;
       const asset: Asset = {
@@ -458,7 +483,10 @@ export default function App() {
       retry && lastUser ? lastUser.assetIds : [...n.draftAssetIds];
     const text =
       retry && lastUser ? lastUser.content : n.draft || TASK_LABELS[n.task];
-    const answerId = uid();
+    const answerId =
+      retry && n.messages.at(-1)?.role === "assistant"
+        ? n.messages.at(-1)!.id
+        : uid();
     const control = new AbortController();
     controllers.current.set(id, control);
     setBusyIds(new Set(controllers.current.keys()));
@@ -559,9 +587,14 @@ export default function App() {
       epoch = ++ocrEpoch.current;
     setOcr(0);
     try {
-      const result = await recognizePage(await d.getPage(page), rect, (n) => {
-        if (epoch === ocrEpoch.current) setOcr(n);
-      });
+      const result = await recognizePage(
+        await d.getPage(page),
+        rect,
+        (n) => {
+          if (epoch === ocrEpoch.current) setOcr(n);
+        },
+        p.view.rotation,
+      );
       if (
         epoch !== ocrEpoch.current ||
         projectRef.current?.document.id !== docId
@@ -575,9 +608,14 @@ export default function App() {
             r[2] > rect[0] &&
             r[1] < rect[3] &&
             r[3] > rect[1];
-          const words = old.words
-            .filter((w) => !intersects(w.rect))
-            .concat(result.words);
+          const first = old.words.findIndex((w) => intersects(w.rect));
+          const words = old.words.filter((w) => !intersects(w.rect));
+          const insertAt =
+            first < 0
+              ? words.length
+              : old.words.slice(0, first).filter((w) => !intersects(w.rect))
+                  .length;
+          words.splice(insertAt, 0, ...result.words);
           p.pages = p.pages.filter((x) => x.page !== page);
           p.pages.push({
             ...result,
@@ -732,13 +770,7 @@ export default function App() {
                 }
                 key={d.id}
               >
-                <button
-                  onClick={() =>
-                    void loadProject(d.id)
-                      .then((p) => p && activate(p))
-                      .catch((e) => setNotice(err(e)))
-                  }
-                >
+                <button onClick={() => void openExisting(d.id)}>
                   <FileText size={16} />
                   <span>{d.name}</span>
                 </button>

@@ -55,8 +55,12 @@ export async function extractPage(
 export async function renderImage(
   page: PDFPageProxy,
   rect?: Rect,
+  rotation = 0,
 ): Promise<{ blob: Blob; viewport: PageViewport; crop: Rect }> {
-  const viewport = page.getViewport({ scale: 2, rotation: 0 }),
+  const viewport = page.getViewport({
+      scale: 2,
+      rotation: (page.rotate + rotation) % 360,
+    }),
     canvas = document.createElement("canvas");
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);

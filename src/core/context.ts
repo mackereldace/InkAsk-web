@@ -186,7 +186,9 @@ function attachmentDescriptions(project: Project, note: Note): string {
     const asset = project.assets.find((candidate) => candidate.id === assetId);
     if (!asset) return [];
     const page = asset.source?.page ? `，来源第 ${asset.source.page} 页` : "";
-    return [`- ${asset.name}（${asset.mime}${page}）`];
+    return [
+      `- ${asset.name}（${asset.mime}${page}），引用图片使用 ![${asset.name}](asset:${asset.id})`,
+    ];
   });
   return descriptions.length ? descriptions.join("\n") : "（无）";
 }

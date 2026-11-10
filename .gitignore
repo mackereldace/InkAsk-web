@@ -8,4 +8,5 @@ test-results/
 playwright-report/
 public/pdf-assets/
 public/ocr-assets/
+artifacts/
 *.inkask

@@ -60,3 +60,5 @@ npx tsx tests/browser-server.ts
 打开 <http://127.0.0.1:8790>。该地址明确标注「本机模拟 · 非真实 AI」，只用于测试，`npm run dev` 和 `npm start` 不使用它。
 
 自带示例为自行编写的教学片段，可用 `npm run sample` 重新生成。
+
+重建示例需要中文字体；非 macOS 环境可通过 `INKASK_CJK_FONT` 指定本机字体文件路径。使用已附带的示例无需重建。

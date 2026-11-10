@@ -1,6 +1,17 @@
 // Self-authored fixture: native English text + a Chinese/English scanned page.
-import { createCanvas } from "@napi-rs/canvas";
+import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
+import { existsSync } from "node:fs";
 import { writeFile, mkdir } from "node:fs/promises";
+const fontPath = [
+  process.env.INKASK_CJK_FONT,
+  "/System/Library/Fonts/STHeiti Light.ttc",
+  "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+  "C:/Windows/Fonts/msyh.ttc",
+].find((p) => p && existsSync(p));
+if (!fontPath || !GlobalFonts.registerFromPath(fontPath, "InkAsk CJK"))
+  throw new Error(
+    "Set INKASK_CJK_FONT to a Chinese font file to rebuild the sample.",
+  );
 const canvas = createCanvas(1190, 1684),
   ctx = canvas.getContext("2d");
 ctx.fillStyle = "#fff";
@@ -9,10 +20,10 @@ ctx.fillStyle = "#47664a";
 ctx.font = "20px sans-serif";
 ctx.fillText("INKASK  /  SCANNED LEARNING MATERIAL", 110, 130);
 ctx.fillStyle = "#273c31";
-ctx.font = 'bold 48px "PingFang SC",sans-serif';
+ctx.font = 'bold 48px "InkAsk CJK",sans-serif';
 ctx.fillText("导数：变化的瞬间", 110, 235);
 ctx.fillStyle = "#56634d";
-ctx.font = '27px "PingFang SC",sans-serif';
+ctx.font = '27px "InkAsk CJK",sans-serif';
 [
   "导数描述函数在某一点的瞬时变化率。",
   "从割线到切线，我们让两个点逐渐靠近。",
@@ -25,7 +36,7 @@ ctx.fillStyle = "#4c6742";
 ctx.font = "34px Georgia";
 ctx.fillText("f'(x) = lim  [f(x + h) - f(x)] / h", 145, 730);
 ctx.font = "23px Georgia";
-ctx.fillText("h → 0", 338, 775);
+ctx.fillText("h -> 0", 338, 775);
 ctx.strokeStyle = "#8ba274";
 ctx.lineWidth = 3;
 ctx.beginPath();
