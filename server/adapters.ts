@@ -269,11 +269,15 @@ async function readWithAbort(
   if (scope.signal.aborted) throw abortError();
   const pending = reader.read();
   let listener: (() => void) | undefined;
+  let rejectAbort: ((reason?: unknown) => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
     listener = () => reject(abortError());
     scope.signal.addEventListener("abort", listener, { once: true });
   });
   try {
+    // The stream may abort synchronously inside reader.read().
+    if (scope.signal.aborted) rejectAbort?.(abortError());
     return await Promise.race([pending, aborted]);
   } finally {
     if (listener) scope.signal.removeEventListener("abort", listener);
@@ -294,7 +298,7 @@ function appendDecoded(
     text = text.slice(0, -1);
     pendingCarriageReturn.value = true;
   }
-  return buffer + text.replace(/\r/g, "\n");
+  return buffer + text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function eventData(frame: string): string | undefined {
@@ -405,7 +409,11 @@ async function fetchEventStream(
   scope: RequestScope,
 ): Promise<Response | StreamEvent> {
   try {
-    const response = await fetcher(url, { ...init, signal: scope.signal });
+    const response = await fetcher(url, {
+      ...init,
+      signal: scope.signal,
+      redirect: "error",
+    });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       return providerFailure(response.status);
@@ -742,7 +750,11 @@ async function* responsesEvents(
     const sdk = new OpenAI({
       apiKey: config.apiKey || "not-required",
       baseURL: config.baseURL,
-      fetch: fetcher,
+      fetch: ((input, init) =>
+        fetcher(input, {
+          ...init,
+          redirect: "error",
+        })) as typeof fetch,
       maxRetries: 0,
       timeout: DEFAULT_TIMEOUT_MS,
     });

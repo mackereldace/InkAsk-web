@@ -69,6 +69,7 @@ describe("Responses adapter", () => {
     let capturedURL = "";
     let capturedBody: Record<string, unknown> = {};
     let capturedAuthorization = "";
+    let capturedRedirect: RequestRedirect | undefined;
     const fetcher = (async (
       input: Parameters<typeof fetch>[0],
       init?: RequestInit,
@@ -77,6 +78,7 @@ describe("Responses adapter", () => {
       capturedURL = requestURL(input);
       capturedBody = JSON.parse(String(init?.body));
       capturedAuthorization = new Headers(init?.headers).get("authorization") ?? "";
+      capturedRedirect = init?.redirect;
       return sseResponse(
         data({
           type: "response.output_text.delta",
@@ -109,6 +111,7 @@ describe("Responses adapter", () => {
       stream: true,
     });
     expect(capturedAuthorization).toBe("Bearer fixture-key");
+    expect(capturedRedirect).toBe("error");
     expect(events).toContainEqual({
       type: "response.output_text.delta",
       delta: "SDK 文本",
@@ -151,6 +154,7 @@ describe("Chat Completions adapter", () => {
     let capturedURL = "";
     let captured: Record<string, unknown> = {};
     let authorization = "";
+    let capturedRedirect: RequestRedirect | undefined;
     const raw =
       data(
         {
@@ -193,6 +197,7 @@ describe("Chat Completions adapter", () => {
       capturedURL = requestURL(input);
       captured = JSON.parse(String(init?.body));
       authorization = new Headers(init?.headers).get("authorization") ?? "";
+      capturedRedirect = init?.redirect;
       return sseResponse(raw, { chunkSize: 1 });
     }) as typeof fetch;
     const client = createProviderClient(config("chat-completions"), {
@@ -220,6 +225,7 @@ describe("Chat Completions adapter", () => {
 
     expect(capturedURL).toBe("https://provider.example/v1/chat/completions");
     expect(authorization).toBe("Bearer fixture-key");
+    expect(capturedRedirect).toBe("error");
     expect(captured).toMatchObject({
       model: "fixture-model",
       stream: true,
@@ -358,6 +364,51 @@ describe("Chat Completions adapter", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("handles abort occurring synchronously inside reader.read", async () => {
+    const abort = new AbortController();
+    let cancelled = false;
+    let upstreamSignal: AbortSignal | undefined;
+    const response = new Response(null, {
+      headers: { "content-type": "text/event-stream" },
+    });
+    Object.defineProperty(response, "body", {
+      value: {
+        getReader() {
+          return {
+            read() {
+              abort.abort();
+              return new Promise<ReadableStreamReadResult<Uint8Array>>(() => undefined);
+            },
+            async cancel() {
+              cancelled = true;
+            },
+            releaseLock() {},
+          };
+        },
+      },
+    });
+    const fetcher = (async (
+      _input: Parameters<typeof fetch>[0],
+      init?: RequestInit,
+    ) => {
+      upstreamSignal = init?.signal ?? undefined;
+      return response;
+    }) as typeof fetch;
+    const client = createProviderClient(config("chat-completions"), {
+      fetch: fetcher,
+    });
+    const iterator = (
+      await client.responses.create(
+        { model: "fixture-model", input: "hello", stream: true },
+        { signal: abort.signal },
+      )
+    )[Symbol.asyncIterator]();
+
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    expect(upstreamSignal?.aborted).toBe(true);
+    expect(cancelled).toBe(true);
+  });
+
   it("rejects oversized or non-SSE event data without unbounded buffering", async () => {
     const huge = `data: ${"x".repeat(1024 * 1024 + 1)}`;
     const client = createProviderClient(config("chat-completions"), {
@@ -381,6 +432,7 @@ describe("Anthropic adapter", () => {
     let capturedURL = "";
     let captured: Record<string, unknown> = {};
     let headers: Headers | undefined;
+    let capturedRedirect: RequestRedirect | undefined;
     const raw =
       "event: content_block_delta\r\n" +
       'data: {"type":"content_block_delta","delta":\r\n' +
@@ -397,6 +449,7 @@ describe("Anthropic adapter", () => {
       capturedURL = requestURL(input);
       captured = JSON.parse(String(init?.body));
       headers = new Headers(init?.headers);
+      capturedRedirect = init?.redirect;
       return sseResponse(raw, { chunkSize: 1 });
     }) as typeof fetch;
     const client = createProviderClient(config("anthropic"), { fetch: fetcher });
@@ -423,6 +476,7 @@ describe("Anthropic adapter", () => {
     expect(capturedURL).toBe("https://provider.example/v1/messages");
     expect(headers?.get("x-api-key")).toBe("fixture-key");
     expect(headers?.get("anthropic-version")).toBe("2023-06-01");
+    expect(capturedRedirect).toBe("error");
     expect(captured).toMatchObject({
       model: "fixture-model",
       system: "系统规则",
@@ -449,6 +503,33 @@ describe("Anthropic adapter", () => {
     expect(events).toContainEqual({
       type: "response.output_text.delta",
       delta: "公式 😊",
+    });
+    expect(events.at(-1)?.type).toBe("response.completed");
+  });
+
+  it("parses single-chunk CRLF multiline JSON data without spurious frame breaks", async () => {
+    const raw =
+      "event: content_block_delta\r\n" +
+      'data: {"type":"content_block_delta","delta":\r\n' +
+      'data: {"type":"text_delta","text":"单块 CRLF"}}\r\n\r\n' +
+      "event: message_delta\r\n" +
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\r\n\r\n' +
+      "event: message_stop\r\n" +
+      'data: {"type":"message_stop"}\r\n\r\n';
+    const client = createProviderClient(config("anthropic"), {
+      fetch: (async () => sseResponse(raw)) as typeof fetch,
+    });
+    const events = await collect(
+      await client.responses.create({
+        model: "fixture-model",
+        input: "hello",
+        stream: true,
+      }),
+    );
+
+    expect(events).toContainEqual({
+      type: "response.output_text.delta",
+      delta: "单块 CRLF",
     });
     expect(events.at(-1)?.type).toBe("response.completed");
   });
