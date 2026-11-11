@@ -9,6 +9,14 @@ import { Readable } from "node:stream";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ChatRequest } from "../src/types.js";
+import {
+  ConfigStoreError,
+  ConfigValidationError,
+  type ConfigSnapshot,
+  type SettingsStore,
+} from "./config.js";
+import type { PrivateProviderConfig } from "./provider-catalog.js";
+import { createProviderClient } from "./adapters.js";
 
 export const CONTEXT_BUDGET = 12_000;
 const MAX_PROMPT_LENGTH = 120_000;
@@ -17,6 +25,8 @@ const MAX_HISTORY_MESSAGE_LENGTH = 60_000;
 const MAX_IMAGES = 8;
 const MAX_IMAGE_DATA_URL_LENGTH = 8 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_DATA_LENGTH = 24 * 1024 * 1024;
+const PROBE_TIMEOUT_MS = 30_000;
+const PROBE_MAX_OUTPUT_TOKENS = 1_024;
 
 const READING_INSTRUCTIONS = `你是 InkAsk 阅读学习助手，帮助用户理解教材与学习资料。
 
@@ -40,13 +50,28 @@ export interface ResponsesClient {
   };
 }
 
+export type ProviderClientFactory = (
+  config: PrivateProviderConfig,
+  options?: { fetch?: typeof fetch },
+) => ResponsesClient | Promise<ResponsesClient>;
+
 export interface CreateAppOptions {
   apiKey?: string;
   baseURL?: string;
   model?: string;
   client?: ResponsesClient;
+  clientFactory?: ProviderClientFactory;
+  configStore?: SettingsStore;
+  fetch?: typeof fetch;
   staticRoot?: string;
   logger?: boolean;
+}
+
+interface RuntimeConfig {
+  client: ResponsesClient;
+  model: string;
+  providerId?: string;
+  supportsImages: boolean;
 }
 
 class ValidationError extends Error {}
@@ -55,6 +80,10 @@ class PublicStreamError extends Error {
   constructor(readonly detail: { code: string; message: string }) {
     super(detail.code);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function apiOrigin(
@@ -98,16 +127,12 @@ function apiOrigin(
 
   if (req.method === "OPTIONS") {
     return reply
-      .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+      .header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
       .header("Access-Control-Allow-Headers", "Content-Type")
       .code(204)
       .send();
   }
   return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isImageDataUrl(value: string): boolean {
@@ -214,6 +239,13 @@ function buildInput(request: ChatRequest): Array<Record<string, unknown>> {
   return messages;
 }
 
+function hasImages(request: ChatRequest): boolean {
+  return (
+    request.images.length > 0 ||
+    request.history.some((message) => Boolean(message.images?.length))
+  );
+}
+
 function sseFrame(
   event: "start" | "delta" | "completed" | "error",
   data: unknown,
@@ -230,7 +262,7 @@ function errorDetails(error: unknown): { code: string; message: string } {
   if (status === 401 || status === 403) {
     return {
       code: "authentication_error",
-      message: "AI 服务鉴权失败，请检查本机 .env 中的 OPENAI_API_KEY。",
+      message: "AI 服务鉴权失败，请检查当前服务设置中的 API Key。",
     };
   }
   if (status === 429) {
@@ -342,31 +374,266 @@ function createOpenAIClient(
   }) as unknown as ResponsesClient;
 }
 
+async function createRuntimeClient(
+  factory: ProviderClientFactory,
+  config: PrivateProviderConfig,
+  fetchImpl?: typeof fetch,
+): Promise<ResponsesClient> {
+  return factory(config, fetchImpl ? { fetch: fetchImpl } : undefined);
+}
+
+function settingsFailure(
+  reply: FastifyReply,
+  error: unknown,
+): FastifyReply {
+  if (error instanceof ConfigValidationError) {
+    return reply
+      .code(400)
+      .send({ error: "invalid_settings", message: error.message });
+  }
+  return reply.code(500).send({
+    error: "settings_unavailable",
+    message: "配置暂时不可用，AI 功能已停用。请检查或修复本机配置文件。",
+  });
+}
+
+function settingsUnavailable(reply: FastifyReply): FastifyReply {
+  return reply.code(503).send({
+    error: "settings_unavailable",
+    message: "设置存储未启用。",
+  });
+}
+
+function probeFailureMessage(error: unknown): string {
+  const status =
+    isRecord(error) && typeof error.status === "number"
+      ? error.status
+      : undefined;
+  if (status === 401 || status === 403) {
+    return "鉴权失败，请检查 API Key。";
+  }
+  if (status === 429) {
+    return "服务暂时限制了请求，请稍后重试。";
+  }
+  return "连接失败，请检查服务地址、密钥和模型。";
+}
+
+async function streamProbe(
+  client: ResponsesClient,
+  model: string,
+): Promise<{ ok: boolean; message: string; latencyMs?: number }> {
+  const startedAt = performance.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  timeout.unref?.();
+
+  try {
+    const upstream = await client.responses.create(
+      {
+        model,
+        input: "只回复 OK",
+        stream: true,
+        max_output_tokens: PROBE_MAX_OUTPUT_TOKENS,
+      },
+      { signal: controller.signal },
+    );
+    for await (const event of upstream) {
+      if (event.type === "response.completed") {
+        const status = event.response?.status;
+        if (status === undefined || status === "completed") {
+          return {
+            ok: true,
+            message: "连接成功，模型已响应。",
+            latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+          };
+        }
+      }
+      if (
+        event.type === "response.incomplete" ||
+        event.type === "response.failed" ||
+        event.type === "error"
+      ) {
+        throw Object.assign(new Error("Probe failed"), {
+          status: event.error?.status,
+        });
+      }
+    }
+    return {
+      ok: false,
+      message: controller.signal.aborted
+        ? "连接超时，请检查服务地址与网络。"
+        : "连接中断，模型未返回完整响应。",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: controller.signal.aborted
+        ? "连接超时，请检查服务地址与网络。"
+        : probeFailureMessage(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function createApp(options: CreateAppOptions = {}): FastifyInstance {
-  const app = Fastify({ logger: options.logger ?? false });
-  const client = createOpenAIClient(options);
-  const model = options.model?.trim() ?? "";
-  const configured = Boolean(client && model);
+  const logger = options.logger
+    ? {
+        redact: {
+          paths: [
+            "req.headers.authorization",
+            'req.headers["x-api-key"]',
+            'req.headers["api-key"]',
+            "req.body.apiKey",
+            "*.apiKey",
+            "*.*.apiKey",
+          ],
+          censor: "[REDACTED]",
+        },
+      }
+    : false;
+  const app = Fastify({ logger });
+  const clientFactory = options.clientFactory ?? createProviderClient;
+  const environmentClient = createOpenAIClient(options);
+  const environmentModel = options.model?.trim() ?? "";
+  const environmentConfigured = Boolean(environmentClient && environmentModel);
+
+  async function snapshot(): Promise<ConfigSnapshot | null> {
+    return options.configStore ? options.configStore.snapshot() : null;
+  }
+
+  function environmentRuntime(): RuntimeConfig | null {
+    if (!environmentClient || !environmentConfigured) return null;
+    return {
+      client: environmentClient,
+      model: environmentModel,
+      supportsImages: true,
+    };
+  }
+
+  async function runtimeConfig(): Promise<{
+    runtime: RuntimeConfig | null;
+    hasDisabledProfiles: boolean;
+  }> {
+    const current = await snapshot();
+    if (current?.activeConfig) {
+      const active = current.activeConfig;
+      const client = await createRuntimeClient(
+        clientFactory,
+        active,
+        options.fetch,
+      );
+      return {
+        runtime: {
+          client,
+          model: active.model,
+          providerId: active.providerId,
+          supportsImages: active.supportsImages,
+        },
+        hasDisabledProfiles: false,
+      };
+    }
+    if (current?.hasProfiles) {
+      return { runtime: null, hasDisabledProfiles: true };
+    }
+    return {
+      runtime: environmentRuntime(),
+      hasDisabledProfiles: false,
+    };
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     if (request.url.startsWith("/api/")) apiOrigin(request, reply);
   });
 
-  app.get("/api/status", async () => ({
-    configured,
-    model: configured ? model : "",
-    contextBudget: CONTEXT_BUDGET,
-  }));
+  app.get("/api/status", async (_request, reply) => {
+    try {
+      const current = await snapshot();
+      if (current?.activeConfig) {
+        return {
+          configured: true,
+          model: current.activeConfig.model,
+          contextBudget: CONTEXT_BUDGET,
+          providerId: current.activeConfig.providerId,
+          supportsImages: current.activeConfig.supportsImages,
+        };
+      }
+      if (current?.hasProfiles) {
+        return {
+          configured: false,
+          model: "",
+          contextBudget: CONTEXT_BUDGET,
+        };
+      }
+    } catch (error) {
+      if (error instanceof ConfigStoreError) {
+        return reply.code(500).send({
+          error: "settings_unavailable",
+          message: "配置暂时不可用，AI 功能已停用。",
+        });
+      }
+      throw error;
+    }
+    const runtime = environmentRuntime();
+    return {
+      configured: Boolean(runtime),
+      model: runtime?.model ?? "",
+      contextBudget: CONTEXT_BUDGET,
+    };
+  });
 
-  app.post("/api/chat", async (request, reply) => {
-    if (!configured || !client) {
-      return reply.code(503).send({
-        error: "not_configured",
-        message:
-          "AI 尚未配置。请在本机 .env 中填写 OPENAI_API_KEY 与 OPENAI_MODEL 后重启服务。",
-      });
+  app.get("/api/settings", async (_request, reply) => {
+    if (!options.configStore) return settingsUnavailable(reply);
+    try {
+      return (await options.configStore.snapshot()).settings;
+    } catch (error) {
+      return settingsFailure(reply, error);
+    }
+  });
+
+  app.put("/api/settings", async (request, reply) => {
+    if (!options.configStore) return settingsUnavailable(reply);
+    try {
+      return await options.configStore.save(request.body);
+    } catch (error) {
+      return settingsFailure(reply, error);
+    }
+  });
+
+  app.post("/api/settings/test", async (request, reply) => {
+    if (!options.configStore) return settingsUnavailable(reply);
+    let config: PrivateProviderConfig;
+    try {
+      config = await options.configStore.prepare(request.body);
+    } catch (error) {
+      return settingsFailure(reply, error);
     }
 
+    try {
+      const client = await createRuntimeClient(
+        clientFactory,
+        config,
+        options.fetch,
+      );
+      return await streamProbe(client, config.model);
+    } catch (error) {
+      return { ok: false, message: probeFailureMessage(error) };
+    }
+  });
+
+  app.delete<{ Params: { providerId: string } }>(
+    "/api/settings/:providerId",
+    async (request, reply) => {
+      if (!options.configStore) return settingsUnavailable(reply);
+      try {
+        return await options.configStore.remove(request.params.providerId);
+      } catch (error) {
+        return settingsFailure(reply, error);
+      }
+    },
+  );
+
+  app.post("/api/chat", async (request, reply) => {
     let body: ChatRequest;
     try {
       body = parseChatRequest(request.body);
@@ -379,6 +646,31 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       throw error;
     }
 
+    let resolved: Awaited<ReturnType<typeof runtimeConfig>>;
+    try {
+      resolved = await runtimeConfig();
+    } catch (error) {
+      return reply.code(503).send({
+        error: "settings_unavailable",
+        message: "配置暂时不可用，AI 功能已停用。请检查当前服务设置。",
+      });
+    }
+    if (!resolved.runtime) {
+      return reply.code(503).send({
+        error: "not_configured",
+        message: resolved.hasDisabledProfiles
+          ? "请选择一个 AI 服务后再提问。"
+          : "AI 尚未配置。请打开连接设置或在本机 .env 中完成配置。",
+      });
+    }
+    if (hasImages(body) && !resolved.runtime.supportsImages) {
+      return reply.code(400).send({
+        error: "images_not_supported",
+        message: "当前模型未启用图片输入，请选择支持图片的模型。",
+      });
+    }
+
+    const runtime = resolved.runtime;
     const controller = new AbortController();
     reply.raw.once("close", () => controller.abort());
     reply
@@ -387,7 +679,9 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       .header("Connection", "keep-alive")
       .header("X-Accel-Buffering", "no");
     return reply.send(
-      Readable.from(streamChat(client, model, body, controller.signal)),
+      Readable.from(
+        streamChat(runtime.client, runtime.model, body, controller.signal),
+      ),
     );
   });
 

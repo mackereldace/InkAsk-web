@@ -1,10 +1,15 @@
 import "dotenv/config";
 import { resolve } from "node:path";
 import { createApp } from "./app.js";
+import { ConfigStore } from "./config.js";
 
 const port = Number.parseInt(process.env.PORT ?? "8787", 10);
 const listenPort = Number.isFinite(port) ? port : 8787;
+const configStore = new ConfigStore(
+  resolve(process.cwd(), ".inkask/providers.json"),
+);
 const app = createApp({
+  configStore,
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL,
   model: process.env.OPENAI_MODEL,
