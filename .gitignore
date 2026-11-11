@@ -9,4 +9,5 @@ playwright-report/
 public/pdf-assets/
 public/ocr-assets/
 artifacts/
+.inkask/
 *.inkask
