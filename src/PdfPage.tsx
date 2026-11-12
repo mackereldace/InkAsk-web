@@ -7,6 +7,8 @@ import {
   type PageViewport,
 } from "./pdf";
 import type { Anchor, Note, PageText, Rect } from "./types";
+import AnnotationLayer from "./AnnotationLayer";
+import { MathText } from "./Markdown";
 interface Props {
   pdf: PDFDocumentProxy;
   page: number;
@@ -182,42 +184,12 @@ export default function PdfPage({
             })}
         </div>
       )}
-      <div className="annotation-layer">
-        {vp &&
-          notes.map((n, i) => (
-            <div key={n.id}>
-              {n.anchor.rects.map((rect, j) => {
-                const r = screenRect(vp, rect);
-                return (
-                  <div
-                    key={j}
-                    className={
-                      "highlight " + (n.id === activeId ? "active" : "")
-                    }
-                    style={{
-                      left: r[0],
-                      top: r[1],
-                      width: r[2] - r[0],
-                      height: r[3] - r[1],
-                    }}
-                  />
-                );
-              })}
-              <button
-                className={"anchor-dot " + (n.id === activeId ? "active" : "")}
-                style={{
-                  top: Math.max(0, screenRect(vp, n.anchor.rects[0])[1] - 4),
-                  left: Math.max(0, vp.width - 30),
-                }}
-                onClick={() => onFocus(n.id)}
-                title={n.title}
-                aria-label={`打开便签 ${i + 1}：${n.title}`}
-              >
-                {i + 1}
-              </button>
-            </div>
-          ))}
-      </div>
+      {vp && <AnnotationLayer width={vp.width} activeId={activeId} onFocus={onFocus}
+        annotations={notes.map((note) => ({
+          id: note.id, title: note.title,
+          rects: note.anchor.rects.map((rect) => screenRect(vp, rect)),
+          preview: <><small>选文便签</small><MathText>{note.anchor.quote || note.title}</MathText></>,
+        }))} />}
       {regionMode && (
         <div
           className="region-overlay"

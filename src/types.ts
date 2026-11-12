@@ -64,6 +64,11 @@ export interface Message {
   coverage?: string;
   history?: HistoryMessage[];
 }
+export interface AnswerAnchor {
+  start: number;
+  end: number;
+  quote: string;
+}
 export interface Note {
   id: string;
   title: string;
@@ -71,6 +76,7 @@ export interface Note {
   parentId?: string;
   parentMessageId?: string;
   branchQuote?: string;
+  answerAnchor?: AnswerAnchor;
   inheritedHistory: HistoryMessage[];
   collapsed: boolean;
   task: Task;

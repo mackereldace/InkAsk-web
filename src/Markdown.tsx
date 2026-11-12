@@ -5,6 +5,22 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { X } from "lucide-react";
 import type { Asset, Message, Project } from "./types";
+import { normalizeMathMarkdown } from "./core/math-markdown";
+
+export function MathText({ children }: { children: string }) {
+  return <span className="math-text"><ReactMarkdown
+    remarkPlugins={[remarkGfm, remarkMath]}
+    rehypePlugins={[[rehypeKatex, { throwOnError: false, trust: false }]]}
+    skipHtml
+    components={{
+      p: ({ children }) => <span>{children}</span>,
+      h1: ({ children }) => <span>{children}</span>, h2: ({ children }) => <span>{children}</span>,
+      h3: ({ children }) => <span>{children}</span>, h4: ({ children }) => <span>{children}</span>,
+      img: () => null,
+      a: ({ children }) => <span>{children}</span>,
+    }}
+  >{normalizeMathMarkdown(children)}</ReactMarkdown></span>;
+}
 
 export function AssetImage({
   asset,
@@ -36,7 +52,7 @@ export function Markdown({
   project,
   onPage,
 }: {
-  message: Message;
+  message: Pick<Message, "content" | "sources">;
   project: Project;
   onPage: (page: number) => void;
 }) {
@@ -86,7 +102,7 @@ export function Markdown({
         },
       }}
     >
-      {content}
+      {normalizeMathMarkdown(content)}
     </ReactMarkdown>
   );
 }

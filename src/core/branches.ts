@@ -1,4 +1,5 @@
-import type { HistoryMessage, Note, Project, Task } from "../types";
+import type { AnswerAnchor, HistoryMessage, Note, Project, Task } from "../types";
+import { mathExcerpt } from "./math-markdown";
 
 function id(): string {
   return (
@@ -66,6 +67,7 @@ export function createBranch(
   parentMessageId: string,
   quote = "",
   task: Task = "custom",
+  answerAnchor?: AnswerAnchor,
 ): Note {
   const note = project.notes.find(
     (candidate) => candidate.id === parentNote.id,
@@ -74,7 +76,7 @@ export function createBranch(
   const cleanQuote = branchQuoteFor(note, parentMessageId, quote);
   return {
     id: id(),
-    title: cleanQuote ? `追问 · ${cleanQuote.slice(0, 28)}` : "分支追问",
+    title: cleanQuote ? `追问 · ${mathExcerpt(cleanQuote)}` : "分支追问",
     anchor: {
       page: note.anchor.page,
       rects: note.anchor.rects.map((rect) => [...rect]),
@@ -83,6 +85,7 @@ export function createBranch(
     parentId: note.id,
     parentMessageId,
     ...(cleanQuote ? { branchQuote: cleanQuote } : {}),
+    ...(answerAnchor ? { answerAnchor: { ...answerAnchor } } : {}),
     inheritedHistory: historyThrough(note, parentMessageId),
     collapsed: false,
     task,

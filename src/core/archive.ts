@@ -298,6 +298,9 @@ function remapProject(project: Project): Project {
       ...(note.branchQuote
         ? { branchQuote: remapText(note.branchQuote, allIds) }
         : {}),
+      ...(note.answerAnchor ? { answerAnchor: { ...note.answerAnchor,
+        end: note.answerAnchor.start + remapText(note.answerAnchor.quote, allIds).length,
+        quote: remapText(note.answerAnchor.quote, allIds) } } : {}),
       inheritedHistory: remapHistory(note.inheritedHistory, allIds),
       templateId: templateIds.get(note.templateId) ?? note.templateId,
       draft: remapText(note.draft, allIds),
@@ -356,6 +359,9 @@ function validateReferences(project: Project): void {
   }
 
   for (const note of project.notes) {
+    if (note.answerAnchor && (!note.parentId || !notes.get(note.parentId)?.messages.some((message) => message.id === note.parentMessageId && message.role === "assistant"))) {
+      throw new Error("An answer anchor requires an assistant parent message.");
+    }
     if (note.parentId) {
       if (!note.parentMessageId)
         throw new Error("A branch note requires a parent message.");
@@ -396,6 +402,7 @@ function validateReferences(project: Project): void {
       throw new Error("A note references a missing template.");
     validateTextReferences(note.draft, assetIds);
     if (note.branchQuote) validateTextReferences(note.branchQuote, assetIds);
+    if (note.answerAnchor) validateTextReferences(note.answerAnchor.quote, assetIds);
     for (const assetId of note.draftAssetIds) {
       if (!assetIds.has(assetId))
         throw new Error("A note draft references a missing asset.");
@@ -481,6 +488,15 @@ function validateManifest(value: unknown): asserts value is Manifest {
       assertRect(rect, `note.anchor.rects[${rectIndex}]`),
     );
     assertString(item.anchor.quote, "note.anchor.quote");
+    if (item.answerAnchor !== undefined) {
+      assertRecord(item.answerAnchor, "note.answerAnchor");
+      const { start, end, quote } = item.answerAnchor;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || (start as number) < 0 || (end as number) <= (start as number)) {
+        throw new Error("Invalid answer anchor offsets.");
+      }
+      assertString(quote, "note.answerAnchor.quote");
+      if (!quote.trim() || (end as number) - (start as number) !== quote.length) throw new Error("Invalid answer anchor quote.");
+    }
     assertArray(item.inheritedHistory, "note.inheritedHistory");
     requiredBoolean(item.collapsed, "note.collapsed");
     assertString(item.task, "note.task");

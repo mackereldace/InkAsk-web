@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { ArrowUpRight, MessageSquarePlus, ScanText } from "lucide-react";
 import PdfPage from "./PdfPage";
 import type { PDFDocumentProxy } from "./pdf";
 import type { Anchor, Note, PageText, Project } from "./types";
@@ -43,8 +42,6 @@ function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, ...prop
   return (
     <section ref={section} id={`pdf-sheet-${page}`} data-pdf-page={page}
       className="pdf-sheet" aria-label={`PDF 第 ${page} 页`} style={{ width: size.width }}>
-      <div className="sheet-heading"><span>第 {page} 页</span><small>{notes.length ? `${notes.length} 个便签` : "选中文字或框选区域提问"}</small></div>
-      {text?.status === "empty" && <div className="scan-hint"><ScanText size={14} />扫描页面 · 可识别文字或框选截图提问</div>}
       {near ? <PdfPage pdf={pdf} page={page} scale={scale} rotation={rotation}
         text={text} notes={notes} regionMode={props.regionMode} activeId={props.activeId}
         onSelect={props.onSelect} onFocus={props.onFocus} onError={props.onError}
@@ -53,12 +50,6 @@ function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, ...prop
           setMeasured({ width, height, scale, rotation });
         }}
       /> : <div className="pdf-page-placeholder" style={{ width: size.width, height: size.height }} aria-label={`第 ${page} 页，滚动到此处显示`} />}
-      <div className="page-caption"><span>{project.document.name}</span><span>{page} / {project.document.pageCount}</span></div>
-      {!!notes.length && <nav className="page-note-links" aria-label={`第 ${page} 页的便签`}>
-        {notes.map((note, index) => <button key={note.id} onClick={() => props.onFocus(note.id)}>
-          <MessageSquarePlus size={13} /><span>{index + 1}. {note.title}</span><ArrowUpRight size={13} />
-        </button>)}
-      </nav>}
     </section>
   );
 }

@@ -34,6 +34,7 @@ import {
 } from "./pdf";
 import ContinuousPdf from "./ContinuousPdf";
 import AnswerReader from "./AnswerReader";
+import { MathText } from "./Markdown";
 import ApiSettings from "./ApiSettings";
 import { cancelOcr, recognizePage } from "./ocr";
 import { dataUrl, streamChat } from "./chat";
@@ -50,6 +51,7 @@ import {
 import { exportProject, importProject, exportMarkdown } from "./core/archive";
 import type {
   Anchor,
+  AnswerAnchor,
   ApiStatus,
   Asset,
   InkDocument,
@@ -87,7 +89,7 @@ export default function App() {
     [activeId, setActiveId] = useState<string>(),
     [focusId, setFocusId] = useState<string>(),
     [readingMessageId, setReadingMessageId] = useState<string>(),
-    [answerSelection, setAnswerSelection] = useState<{ noteId: string; messageId: string; quote: string }>(),
+    [answerSelection, setAnswerSelection] = useState<{ noteId: string; messageId: string; quote: string; anchor: AnswerAnchor }>(),
     [navigation, setNavigation] = useState(0),
     [ocr, setOcr] = useState<number | null>(null),
     [busyIds, setBusyIds] = useState(new Set<string>()),
@@ -403,7 +405,7 @@ export default function App() {
     const p = projectRef.current;
     if (!p || !focusId) return;
     const parent = parentReadingTarget(p.notes, focusId);
-    if (parent) focus(parent.noteId, parent.messageId);
+    if (parent) { focus(parent.noteId, parent.messageId); setActiveId(focusId); }
     else navigate();
   }
   function removeNote(id: string) {
@@ -485,7 +487,7 @@ export default function App() {
     if (answerSelection) {
       const parent = p.notes.find((note) => note.id === answerSelection.noteId);
       const message = parent?.messages.find((message) => message.id === answerSelection.messageId);
-      if (parent && message) branch(parent, message, answerSelection.quote, task);
+      if (parent && message) branch(parent, message, answerSelection.quote, task, answerSelection.anchor);
       return;
     }
     if (!selection) return;
@@ -628,10 +630,10 @@ export default function App() {
       void persist().catch(() => {});
     }
   }
-  function branch(parent: Note, message: Message, quote?: string, task: Task = "custom") {
+  function branch(parent: Note, message: Message, quote?: string, task: Task = "custom", answerAnchor?: AnswerAnchor) {
     const p = projectRef.current;
     if (!p) return;
-    const n = createBranch(p, parent, message.id, quote, task);
+    const n = createBranch(p, parent, message.id, quote, task, answerAnchor);
     update((p) => p.notes.push(n));
     focus(n.id);
   }
@@ -1022,7 +1024,7 @@ export default function App() {
             <div className="document-heading">
               <div>
                 <span className="eyebrow">{focused ? `READING CHAIN · 第 ${parents.length} 层` : "READ · ASK · UNDERSTAND"}</span>
-                <h1>{focused ? focused.title : project.document.name.replace(/\.pdf$/i, "")}</h1>
+                <h1>{focused ? <MathText>{focused.title}</MathText> : project.document.name.replace(/\.pdf$/i, "")}</h1>
                 <p>{focused ? "阅读回答，选中文字继续提问" : <>{project.document.pageCount} 页 <span>·</span> {totalNotes} 个思考便签 <span>·</span> 已提取 {donePages} 页文字</>}</p>
               </div>
               <span className="document-tag"><span />{focused ? "回答阅读" : "连续阅读"}</span>
@@ -1033,7 +1035,7 @@ export default function App() {
                 <button onClick={() => navigate()} title={project.document.name}><FileText size={13} />原始 PDF</button>
                 {parents.map((note, index) => <span key={note.id}><ChevronRight size={12} />
                   <button aria-current={note.id === focusId ? "page" : undefined} disabled={note.id === focusId}
-                    onClick={() => focus(note.id, parents[index + 1]?.parentMessageId)} title={note.title}>{note.title}</button>
+                    onClick={() => focus(note.id, parents[index + 1]?.parentMessageId)} title={note.title}><MathText>{note.title}</MathText></button>
                 </span>)}
               </nav>
             </div> : <div className="reader-toolbar">
@@ -1069,13 +1071,13 @@ export default function App() {
               <button onClick={() => setSettings(true)}>如何配置<ArrowUpRight size={12} /></button>
             </div>}
             <div ref={reader} className={"reader-area " + (focused ? "answer-reader-area" : "pdf-reader-area")}>
-              {focused ? <AnswerReader key={`${focused.id}:${readingMessageId ?? "latest"}`} note={focused} messageId={readingMessageId} project={project}
+              {focused ? <AnswerReader key={`${focused.id}:${readingMessageId ?? "latest"}`} note={focused} messageId={readingMessageId} activeId={activeId} project={project}
                 busy={busyIds.has(focused.id)} apiReady={status.configured} context={context}
                 onUpdate={(id, change) => update((p) => { const note = p.notes.find((n) => n.id === id); if (note) Object.assign(note, change); })}
                 onSend={(id, prompt) => void send(id, prompt)} onStop={(id) => controllers.current.get(id)?.abort()}
-                onRetry={(id) => void send(id, undefined, true)} onBranch={branch} onDelete={removeNote}
+                onRetry={(id) => void send(id, undefined, true)} onBranch={(note, message, anchor) => branch(note, message, anchor?.quote, "custom", anchor)} onDelete={removeNote}
                 onPage={pageTo} onFocus={focus} onAttach={(id, files) => void attach(id, files)} onScreenshot={(note) => void screenshot(note)}
-                onSelect={(note, message, quote) => { setSelection(undefined); setAnswerSelection({ noteId: note.id, messageId: message.id, quote }); }} onClearSelection={() => setAnswerSelection(undefined)}
+                onSelect={(note, message, anchor) => { setSelection(undefined); setAnswerSelection({ noteId: note.id, messageId: message.id, quote: anchor.quote, anchor }); }} onClearSelection={() => setAnswerSelection(undefined)}
               /> : pdf && <ContinuousPdf pdf={pdf} project={project} scrollRoot={reader} pageSizes={pdfPageSizes.current} activeId={activeId} regionMode={region}
                 onSelect={(anchor) => { setAnswerSelection(undefined); setSelection(anchor); }} onFocus={focus} onError={setNotice}
                 onClearSelection={() => setSelection(undefined)}
@@ -1084,8 +1086,8 @@ export default function App() {
             {(selection || answerSelection) && (
               <div className="selection-toolbar" onMouseDown={(e) => e.preventDefault()}>
                 <div className="selected-excerpt">
-                  {(answerSelection?.quote ?? selection?.quote)
-                    ? `“${(answerSelection?.quote ?? selection?.quote ?? "").slice(0, 50)}${(answerSelection?.quote ?? selection?.quote ?? "").length > 50 ? "…" : ""}”`
+                  {answerSelection ? <MathText>{answerSelection.quote}</MathText> : (selection?.quote)
+                    ? `“${selection.quote.slice(0, 50)}${selection.quote.length > 50 ? "…" : ""}”`
                     : "已选择页面区域"}
                 </div>
                 <div className="selection-actions">

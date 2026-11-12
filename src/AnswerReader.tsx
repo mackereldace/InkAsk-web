@@ -1,22 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUp, ArrowUpRight, Braces, Copy, GitBranch, ImagePlus, RotateCcw, Square, Trash2 } from "lucide-react";
-import { AssetImage, Markdown } from "./Markdown";
+import { AssetImage, Markdown, MathText } from "./Markdown";
+import AnnotationLayer, { type ReadingAnnotation } from "./AnnotationLayer";
+import { answerText, answerAnchorRange, answerRangeRects, selectedAnswerAnchor } from "./core/answer-selection";
 import { answerFor } from "./core/reading";
-import type { ContextResult, Message, Note, Project, Task } from "./types";
+import type { AnswerAnchor, ContextResult, Message, Note, Project, Task } from "./types";
 
 interface Props {
   note: Note;
   project: Project;
   messageId?: string;
+  activeId?: string;
   busy: boolean;
   apiReady: boolean;
   context: (note: Note) => ContextResult;
   onUpdate: (id: string, change: Partial<Note>) => void;
   onSend: (id: string, prompt?: string) => void;
   onStop: (id: string) => void;
-  onSelect: (note: Note, message: Message, quote: string) => void;
+  onSelect: (note: Note, message: Message, anchor: AnswerAnchor) => void;
   onClearSelection: () => void;
-  onBranch: (note: Note, message: Message) => void;
+  onBranch: (note: Note, message: Message, anchor?: AnswerAnchor) => void;
   onDelete: (id: string) => void;
   onPage: (page: number) => void;
   onFocus: (id: string, messageId?: string) => void;
@@ -28,11 +31,39 @@ interface Props {
 export default function AnswerReader(props: Props) {
   const { note, project, onUpdate, onSend, onPage } = props;
   const [preview, setPreview] = useState(false), [edited, setEdited] = useState("");
-  const input = useRef<HTMLInputElement>(null), body = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null), body = useRef<HTMLDivElement>(null), surface = useRef<HTMLDivElement>(null);
+  const [annotationLayout, setAnnotationLayout] = useState<{ width: number; annotations: ReadingAnnotation[] }>({ width: 0, annotations: [] });
   const answer = answerFor(note, props.messageId);
   const answers = note.messages.filter((m) => m.role === "assistant");
   const question = answer ? note.messages.slice(0, note.messages.indexOf(answer)).reverse().find((m) => m.role === "user") : undefined;
   const children = answer ? project.notes.filter((n) => n.parentId === note.id && n.parentMessageId === answer.id) : [];
+  const parentMessage = project.notes.find((n) => n.id === note.parentId)?.messages.find((m) => m.id === note.parentMessageId);
+  const annotationKey = JSON.stringify(children.map((child) => [child.id, child.title, child.branchQuote, child.answerAnchor]));
+  useLayoutEffect(() => {
+    const root = body.current, wrapper = surface.current;
+    if (!root || !wrapper) { setAnnotationLayout({ width: 0, annotations: [] }); return; }
+    let alive = true, frame = 0;
+    const measure = () => {
+      frame = 0;
+      if (!alive) return;
+      setAnnotationLayout({ width: wrapper.clientWidth, annotations: children.map((child) => {
+        const range = answerAnchorRange(root, child.answerAnchor, child.branchQuote ?? "");
+        return {
+          id: child.id, title: child.title,
+          rects: range ? answerRangeRects(range, wrapper) : [],
+          preview: <><small>{range ? "选文便签" : "已保存便签 · 选文位置已变化"}</small><MathText>{child.branchQuote || child.title}</MathText></>,
+        };
+      }) });
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+    measure();
+    const observer = new ResizeObserver(schedule);
+    observer.observe(root);
+    observer.observe(wrapper);
+    root.addEventListener("load", schedule, true);
+    void document.fonts?.ready.then(schedule);
+    return () => { alive = false; observer.disconnect(); root.removeEventListener("load", schedule, true); cancelAnimationFrame(frame); };
+  }, [answer?.id, answer?.content, annotationKey]);
   const ctx = props.context(note);
   const template = project.templates.find((t) => t.id === note.templateId) ?? project.templates[0];
   function openPreview() { setEdited(ctx.prompt); setPreview(!preview); }
@@ -48,8 +79,9 @@ export default function AnswerReader(props: Props) {
       props.onClearSelection();
       return;
     }
-    const quote = selection.toString().trim();
-    if (quote) props.onSelect(note, answer, quote);
+    const anchor = selectedAnswerAnchor(body.current, selection.getRangeAt(0));
+    if (anchor) props.onSelect(note, answer, anchor);
+    else props.onClearSelection();
   };
   const selectionCallback = useRef(select);
   selectionCallback.current = select;
@@ -71,37 +103,39 @@ export default function AnswerReader(props: Props) {
     </header>
     <details className="reading-source" open={!answer}>
       <summary>{note.parentId ? "选中的上一层回答" : `选中的 PDF 原文 · 第 ${note.anchor.page} 页`}</summary>
-      <blockquote>{note.branchQuote || note.anchor.quote || "已选择原文区域，可附上截图提问。"}</blockquote>
+      <blockquote className="message-body"><Markdown message={{ content: note.branchQuote || note.anchor.quote || "已选择原文区域，可附上截图提问。", sources: parentMessage?.sources }} project={project} onPage={onPage} /></blockquote>
       {!answer && !note.parentId && <label className="quote-editor">校正选文 / OCR 文字<textarea aria-label="校正选文" value={note.anchor.quote}
         onChange={(e) => onUpdate(note.id, { anchor: { ...note.anchor, quote: e.target.value } })} /></label>}
     </details>
-    {question && <div className="answer-question"><small>这次提问</small><p>{question.content}</p>
+    {question && <div className="answer-question"><small>这次提问</small><div className="message-body"><Markdown message={question} project={project} onPage={onPage} /></div>
       {!!question.assetIds.length && <div className="attachment-list">{question.assetIds.map((id) => {
         const asset = project.assets.find((a) => a.id === id); return asset ? <AssetImage key={id} asset={asset} /> : null;
       })}</div>}
     </div>}
     {answer ? <>
+      <div ref={surface} className="answer-annotation-surface">
       <div ref={body} className={"message-body answer-body " + (answer.status === "streaming" ? "streaming" : "")}
         aria-label="AI 回答正文" onMouseUp={select} onKeyUp={select} onTouchEnd={select}>
         <Markdown message={answer} project={project} onPage={onPage} />
         {answer.status === "streaming" && !answer.content && <span className="thinking" role="status">正在阅读文档，生成回答…</span>}
       </div>
+      <AnnotationLayer {...annotationLayout} activeId={props.activeId} onFocus={props.onFocus} />
+      </div>
       {answer.error && <p className="inline-error" role="alert">{answer.error}</p>}
       {answer.status === "stopped" && <p className="small muted">已停止，收到的回答已保留。</p>}
       <div className="answer-actions">
         {props.busy ? <button onClick={() => props.onStop(note.id)}><Square size={13} />停止生成</button> : <>
-          {!!answer.content.trim() && <button onClick={() => props.onBranch(note, answer)}><GitBranch size={14} />对整篇回答提问</button>}
+          {!!answer.content.trim() && <button onClick={() => {
+            const text = body.current ? answerText(body.current).text : "";
+            const quote = text.trim();
+            const start = text.length - text.trimStart().length;
+            props.onBranch(note, answer, quote ? { start, end: start + quote.length, quote } : undefined);
+          }}><GitBranch size={14} />对整篇回答提问</button>}
           <button onClick={() => void navigator.clipboard?.writeText(answer.content)}><Copy size={13} />复制回答</button>
           {(answer.status === "error" || answer.status === "stopped") && answer.id === note.messages.at(-1)?.id && <button onClick={() => props.onRetry(note.id)}><RotateCcw size={13} />重试</button>}
         </>}
         {answer.prompt && <details><summary>提问记录</summary><pre>{answer.prompt}</pre></details>}
       </div>
-      {!!children.length && <nav className="answer-note-links" aria-label="这份回答中的便签">
-        <h2><GitBranch size={15} />这份回答中的便签 <small>{children.length}</small></h2>
-        {children.map((child) => <button key={child.id} onClick={() => props.onFocus(child.id)}>
-          <span><strong>{child.title}</strong><small>{child.branchQuote}</small></span><ArrowUpRight size={16} />
-        </button>)}
-      </nav>}
       <p className="answer-reading-hint">选中回答里的文字，继续进入下一层提问。</p>
     </> : <>
           <div

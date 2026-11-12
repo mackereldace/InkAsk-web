@@ -2431,7 +2431,8 @@ button:hover {
 .document-heading > div { min-width: 0; }
 .document-heading h1 { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader-area { min-height: 0; overscroll-behavior: contain; scroll-behavior: auto; }
-.continuous-pdf { display: flex; flex-direction: column; align-items: center; gap: 34px; width: max-content; min-width: 100%; padding: 0 14px 40px; }
+.continuous-pdf { display: flex; flex-direction: column; align-items: center; gap: 0; width: max-content; min-width: 100%; padding: 0 14px 40px; }
+.continuous-pdf .pdf-page, .continuous-pdf .pdf-page-placeholder { border: 0; box-shadow: none; }
 .pdf-sheet { position: relative; flex-shrink: 0; scroll-margin: 20px; }
 .pdf-sheet > .scan-hint { position: static; margin: -4px 0 10px; }
 .sheet-heading { display: flex; justify-content: space-between; align-items: center; padding: 0 2px 12px; font-size: 11px; color: #71806b; }
@@ -2465,6 +2466,18 @@ button:hover {
 .answer-question > small { color: #91a07d; font-size: 11px; }
 .answer-question > p { margin: 8px 0 0; color: #5a6e4e; font-size: 15px; white-space: pre-wrap; }
 .answer-body { font-size: 16px; line-height: 1.95; color: #344e3d; min-height: 90px; }
+.answer-annotation-surface { position: relative; padding-right: 48px; margin-right: -36px; }
+.annotation-preview { display: none; position: absolute; width: min(280px, calc(100vw - var(--sidebar) - 60px)); max-height: 230px; overflow: auto; padding: 12px 14px; border: 1px solid #d8e1c9; border-radius: 6px; background: #fffffa; box-shadow: 0 5px 20px #344a2420; color: #637455; font-size: 12px; line-height: 1.8; pointer-events: auto; z-index: 9; }
+.annotation-preview > small { display: block; color: #92a080; font-size: 10px; margin-bottom: 7px; }
+.annotation-item:hover > .annotation-preview, .annotation-item:focus-within > .annotation-preview { display: block; }
+.annotation-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.annotation-preview .katex-display { margin: 5px 0; overflow: auto; }
+.math-text { min-width: 0; }
+.math-text .katex-display { display: inline; margin: 0; }
+.math-text .katex-display > .katex { display: inline; }
+.reading-source > .message-body { white-space: normal; font-size: 14px; }
+.answer-question > .message-body { font-size: 15px; color: #5a6e4e; }
+.reading-trail .math-text { overflow: hidden; text-overflow: ellipsis; }
 .answer-body p { margin: 15px 0; line-height: 1.95; }
 .answer-body h1 { font-size: 26px; margin: 28px 0 15px; }
 .answer-body h2 { font-size: 22px; margin: 26px 0 14px; }
@@ -2502,6 +2515,7 @@ button:hover {
   .reading-trail button { max-width: 110px; font-size: 10px; }
   .answer-document { padding: 23px 18px; }
   .answer-body { font-size: 15px; }
+  .answer-annotation-surface { margin-right: -12px; padding-right: 30px; }
   .answer-document-heading { flex-wrap: wrap; }
   .answer-document-heading > .eyebrow { font-size: 9px; }
   .answer-actions { gap: 11px; }
