@@ -61,6 +61,57 @@ describe("binary-safe project storage", () => {
     expect(get.mock.contexts.some((store) => (store as unknown as IDBObjectStore).name === "binaries")).toBe(false);
   });
 
+  it("captures one private metadata graph before delayed Blob reads and isolates later external edits", async () => {
+    const storage = await import("../src/core/storage");
+    const project = fixture();
+    project.pages = [{ page: 1, text: "original page", words: [{ text: "original word", rect: [1, 2, 3, 4] }], source: "native", status: "ready", width: 600, height: 800 }];
+    project.notes = [{
+      id: "note", title: "original note", anchor: { page: 1, rects: [[10, 20, 30, 40]], quote: "original quote" },
+      inheritedHistory: [{ role: "assistant", content: "original inherited answer", assetIds: ["image"] }],
+      collapsed: false, task: "explain", templateId: "template", draft: "original draft", draftAssetIds: ["image"], createdAt: 1,
+      messages: [{ id: "answer", role: "assistant", content: "original answer", assetIds: ["image"], status: "complete", createdAt: 1,
+        sources: [{ id: "S1", page: 1, text: "original source" }], history: [{ role: "user", content: "original question", assetIds: ["image"] }] }],
+    }];
+    project.assets[0].source = { page: 1, rect: [1, 2, 30, 40] };
+    let started!: () => void, release!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const readPdf = project.document.pdf.arrayBuffer.bind(project.document.pdf);
+    vi.spyOn(project.document.pdf, "arrayBuffer").mockImplementation(async () => { started(); await gate; return readPdf(); });
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    const saving = storage.saveProject(project);
+    await reading;
+    // This budget catches a second whole-graph clone before any IDB serialization.
+    expect(clone.mock.calls.filter(([value]) => value && typeof value === "object" && "notes" in value && !("storageVersion" in value))).toHaveLength(1);
+    project.document.name = "changed.pdf";
+    project.view.scale = 2;
+    project.pages[0].text = "changed page";
+    project.pages[0].words[0].rect[0] = 999;
+    project.notes[0].title = "changed note";
+    project.notes[0].anchor.rects[0][0] = 999;
+    project.notes[0].inheritedHistory[0].content = "changed inherited answer";
+    project.notes[0].inheritedHistory[0].assetIds!.push("later-image");
+    project.notes[0].messages[0].content = "changed answer";
+    project.notes[0].messages[0].sources![0].text = "changed source";
+    project.notes[0].messages[0].history![0].content = "changed question";
+    project.notes[0].draftAssetIds.push("later-image");
+    project.assets[0].name = "changed-image.png";
+    project.assets[0].source!.rect![0] = 999;
+    project.assets[0].data = new Blob(["changed image bytes"]);
+    release();
+    await saving;
+    const saved = (await storage.loadProject("doc"))!;
+    expect(saved.document.name).toBe("doc.pdf");
+    expect(saved.view.scale).toBe(1);
+    expect(saved.pages[0]).toMatchObject({ text: "original page", words: [{ text: "original word", rect: [1, 2, 3, 4] }] });
+    expect(saved.notes[0]).toMatchObject({ title: "original note", anchor: { rects: [[10, 20, 30, 40]] }, draftAssetIds: ["image"],
+      inheritedHistory: [{ role: "assistant", content: "original inherited answer", assetIds: ["image"] }],
+      messages: [{ content: "original answer", sources: [{ text: "original source" }], history: [{ content: "original question" }] }],
+    });
+    expect(saved.assets[0]).toMatchObject({ name: "image.png", source: { page: 1, rect: [1, 2, 30, 40] } });
+    expect(await bytes(saved.assets[0].data)).toEqual([9, 8, 7]);
+  });
+
   it("upgrades v1 without Blob writes and lazily converts legacy data", async () => {
     const legacy = new Dexie("inkask");
     legacy.version(1).stores({ projects: "document.id, document.updatedAt" });
@@ -166,4 +217,25 @@ describe("workspace folders", () => {
     await storage.moveDocument("doc");
     expect(await storage.listDocumentFolders()).toEqual({});
   });
+  it("moves folder subtrees with their document memberships and rejects cycles and collisions", async () => {
+    const storage = await import("../src/core/storage");
+    await storage.saveProject(fixture());
+    const source = await storage.createFolder("Research"), destination = await storage.createFolder("Archive");
+    const child = await storage.createFolder("Notes", source.id), nested = await storage.createFolder("Nested", child.id);
+    await storage.moveDocument("doc", nested.id);
+    await expect(storage.moveFolder(source.id, nested.id)).rejects.toThrow(/自身|子文件夹/);
+    await expect(storage.moveFolder(child.id, child.id)).rejects.toThrow(/自身|子文件夹/);
+    await expect(storage.moveFolder(child.id, "missing")).rejects.toThrow(/不存在/);
+    await storage.createFolder("Notes", destination.id);
+    await expect(storage.moveFolder(child.id, destination.id)).rejects.toThrow(/同名/);
+    expect((await storage.listFolders()).find((folder) => folder.id === child.id)?.parentId).toBe(source.id);
+    await storage.moveFolder(source.id, destination.id);
+    expect((await storage.listFolders()).find((folder) => folder.id === source.id)?.parentId).toBe(destination.id);
+    expect((await storage.listFolders()).find((folder) => folder.id === nested.id)?.parentId).toBe(child.id);
+    expect(await storage.listDocumentFolders()).toEqual({ doc: nested.id });
+    expect(await bytes((await storage.loadProject("doc"))!.document.pdf)).toEqual([0, 255, 42]);
+    await storage.moveFolder(source.id);
+    expect((await storage.listFolders()).find((folder) => folder.id === source.id)?.parentId).toBeUndefined();
+  });
+
 });

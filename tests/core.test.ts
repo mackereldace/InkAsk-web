@@ -113,6 +113,13 @@ function projectFixture(): Project {
 }
 
 describe("prompt templates and context", () => {
+  it("keeps the selected source and surrounding context as distinct citations", () => {
+    const project = projectFixture(), selected = note();
+    const result = buildContext({ project, note: selected, question: "解释", template: project.templates[0] });
+    expect(result.sources[0].text).toBe(selected.anchor.quote);
+    expect(result.sources[0].rects).toEqual(selected.anchor.rects);
+    expect(result.sources.some((source) => source.id !== "S1" && source.page === 1 && source.text === project.pages[0].text)).toBe(true);
+  });
   it("reports pending and empty pages accurately and supplies cited retrieval", () => {
     const project = projectFixture();
     const selected = note({

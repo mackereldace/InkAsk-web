@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import PdfPage from "./PdfPage";
 import type { PDFDocumentProxy } from "./pdf";
 import type { Anchor, Note, PageText, Project } from "./types";
+import { pageAtReadingPosition, type ReadingDirection } from "./core/pdf-reader";
 
 interface Props {
   pdf: PDFDocumentProxy;
@@ -10,6 +11,8 @@ interface Props {
   pageSizes: Map<number, { width: number; height: number }>;
   activeId?: string;
   regionMode: boolean;
+  direction?: ReadingDirection;
+  selection?: Anchor;
   onSelect: (anchor: Anchor) => void;
   onClearSelection: () => void;
   onFocus: (id: string) => void;
@@ -44,7 +47,7 @@ function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, ...prop
       className="pdf-sheet" aria-label={`PDF 第 ${page} 页`} style={{ width: size.width }}>
       <div className="pdf-sheet-content" style={{ width: size.width, height: size.height }}>
       {near ? <PdfPage pdf={pdf} page={page} scale={scale} rotation={rotation}
-        text={text} notes={notes} regionMode={props.regionMode} activeId={props.activeId}
+        text={text} notes={notes} regionMode={props.regionMode} selection={props.selection} activeId={props.activeId}
         onSelect={props.onSelect} onFocus={props.onFocus} onError={props.onError}
         onSize={({ width, height }) => {
           pageSizes.set(page, { width: (swapped ? height : width) / scale, height: (swapped ? width : height) / scale });
@@ -60,16 +63,6 @@ export default function ContinuousPdf(props: Props) {
   const stack = useRef<HTMLDivElement>(null);
   const onPageChange = useRef(props.onPageChange);
   onPageChange.current = props.onPageChange;
-  const clearSelection = useRef(props.onClearSelection);
-  clearSelection.current = props.onClearSelection;
-  useEffect(() => {
-    const changed = () => {
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed || !stack.current?.contains(selection.anchorNode) || !stack.current.contains(selection.focusNode)) clearSelection.current();
-    };
-    document.addEventListener("selectionchange", changed);
-    return () => document.removeEventListener("selectionchange", changed);
-  }, []);
   useEffect(() => {
     const root = props.scrollRoot.current;
     const el = stack.current;
@@ -79,14 +72,8 @@ export default function ContinuousPdf(props: Props) {
     const measure = () => {
       frame = 0;
       const bounds = root.getBoundingClientRect();
-      const line = bounds.top + Math.min(160, bounds.height * 0.3);
-      const current = [...visible].map((sheet) => ({ sheet, rect: sheet.getBoundingClientRect() }))
-        .filter(({ rect }) => rect.bottom > bounds.top && rect.top < bounds.bottom)
-        .sort((a, b) => {
-          const distance = (r: DOMRect) => r.top <= line && r.bottom >= line ? 0 : Math.min(Math.abs(r.top - line), Math.abs(r.bottom - line));
-          return distance(a.rect) - distance(b.rect);
-        })[0];
-      if (current) onPageChange.current(Number(current.sheet.dataset.pdfPage));
+      const current = pageAtReadingPosition([...visible].map((sheet) => ({ page: Number(sheet.dataset.pdfPage), rect: sheet.getBoundingClientRect() })), bounds, props.direction ?? "vertical");
+      if (current !== undefined) onPageChange.current(current);
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
     const observer = new IntersectionObserver((entries) => {
@@ -98,17 +85,21 @@ export default function ContinuousPdf(props: Props) {
     }, { root });
     el.querySelectorAll<HTMLElement>("[data-pdf-page]").forEach((sheet) => observer.observe(sheet));
     root.addEventListener("scroll", schedule, { passive: true });
-    return () => { observer.disconnect(); root.removeEventListener("scroll", schedule); cancelAnimationFrame(frame); };
-  }, [props.pdf, props.scrollRoot]);
-  const pages = new Map(props.project.pages.map((page) => [page.page, page]));
-  const notes = new Map<number, Note[]>();
-  for (const note of props.project.notes) {
-    if (note.parentId) continue;
-    const group = notes.get(note.anchor.page) ?? [];
-    group.push(note);
-    notes.set(note.anchor.page, group);
-  }
-  return <div ref={stack} className="continuous-pdf" aria-label="PDF 连续阅读">
+    const resize = new ResizeObserver(schedule);
+    resize.observe(root); resize.observe(el);
+    return () => { observer.disconnect(); resize.disconnect(); root.removeEventListener("scroll", schedule); cancelAnimationFrame(frame); };
+  }, [props.pdf, props.scrollRoot, props.direction]);
+  const pages = useMemo(() => new Map(props.project.pages.map((page) => [page.page, page])), [props.project.pages]);
+  const notes = useMemo(() => {
+    const byPage = new Map<number, Note[]>();
+    for (const note of props.project.notes) {
+      if (note.parentId) continue;
+      const group = byPage.get(note.anchor.page) ?? [];
+      group.push(note); byPage.set(note.anchor.page, group);
+    }
+    return byPage;
+  }, [props.project.notes]);
+  return <div ref={stack} className={"continuous-pdf direction-" + (props.direction ?? "vertical")} aria-label="PDF 连续阅读">
     {Array.from({ length: props.pdf.numPages }, (_, index) => <Sheet {...props} key={index + 1}
       page={index + 1} text={pages.get(index + 1)} notes={notes.get(index + 1) ?? []} />)}
   </div>;

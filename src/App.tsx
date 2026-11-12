@@ -16,6 +16,7 @@ import {
   MessageSquarePlus,
   Minus,
   Plus,
+  PanelLeft,
   RotateCw,
   ScanText,
   Search,
@@ -26,12 +27,19 @@ import {
 import {
   openPdf,
   extractPage,
-  renderImage,
+  renderImage, screenRect,
+  type PageViewport,
   type PDFDocumentProxy,
 } from "./pdf";
 import ContinuousPdf from "./ContinuousPdf";
 import AnswerReader from "./AnswerReader";
 import Library from "./Library";
+import SelectionPopover from "./SelectionPopover";
+import type { SourcePreviewResult } from "./SourceCitation";
+import { sourceAnchor, unionRects } from "./core/source-location";
+import { answerAnchorRange } from "./core/answer-selection";
+import "./pdf-reader.css";
+import "./reader-interactions.css";
 import "./library.css";
 import { folderLabel, libraryDocuments } from "./core/library";
 import { MathText } from "./Markdown";
@@ -39,6 +47,8 @@ import ApiSettings from "./ApiSettings";
 import { cancelOcr, recognizePage } from "./ocr";
 import { dataUrl, streamChat } from "./chat";
 import { buildContext } from "./core/context";
+import { copyProjectForEdit } from "./core/project-edit";
+import { ProjectSaveQueue } from "./core/project-save";
 import { createBranch, descendantIds } from "./core/branches";
 import { answerFor, parentReadingTarget, readingTrail, type ReadingTarget } from "./core/reading";
 import { DEFAULT_TEMPLATES, TASK_LABELS } from "./core/templates";
@@ -47,7 +57,7 @@ import {
   loadProject,
   listDocuments,
   deleteProject,
-  listFolders, listDocumentFolders, createFolder, renameFolder, deleteFolder, moveDocument,
+  listFolders, listDocumentFolders, createFolder, renameFolder, deleteFolder, moveDocument, moveFolder,
   type WorkspaceFolder,
 } from "./core/storage";
 import { exportProject, importProject, exportMarkdown } from "./core/archive";
@@ -60,7 +70,7 @@ import type {
   Message,
   Note,
   Project,
-  Task,
+  Task, Source,
 } from "./types";
 const uid = () => crypto.randomUUID();
 const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -85,6 +95,7 @@ export default function App() {
     [documentFolders, setDocumentFolders] = useState<Record<string, string>>({}),
     [currentFolder, setCurrentFolder] = useState<string>(),
     [libraryVisible, setLibraryVisible] = useState(true),
+    [sidebarOpen, setSidebarOpen] = useState(false),
     [answerScale, setAnswerScale] = useState(1),
     [status, setStatus] = useState(DEFAULT_STATUS),
     [notice, setNotice] = useState(""),
@@ -93,6 +104,9 @@ export default function App() {
     [saved, setSaved] = useState("已保存在本机"),
     [saveFailed, setSaveFailed] = useState(false);
   const [selection, setSelection] = useState<Anchor>(),
+    [citationAnchor, setCitationAnchor] = useState<Anchor>(),
+    [selectionViewport, setSelectionViewport] = useState<PageViewport>(),
+    [draftId, setDraftId] = useState<string>(),
     [region, setRegion] = useState(false),
     [activeId, setActiveId] = useState<string>(),
     [focusId, setFocusId] = useState<string>(),
@@ -113,7 +127,7 @@ export default function App() {
     revision = useRef(0),
     savedRevision = useRef(0),
     timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
-    queue = useRef(Promise.resolve()),
+    queue = useRef<ProjectSaveQueue | undefined>(undefined),
     controllers = useRef(new Map<string, AbortController>()),
     fileInput = useRef<HTMLInputElement>(null),
     importInput = useRef<HTMLInputElement>(null),
@@ -121,6 +135,9 @@ export default function App() {
     openRequest = useRef(0),
     switchLocks = useRef(new Set<number>()),
     captures = useRef(new Map<string, Promise<Asset | undefined>>()),
+    sourcePreviews = useRef(new Map<string, Promise<SourcePreviewResult | undefined>>()),
+    sourceQueue = useRef(Promise.resolve()),
+    selectionEpoch = useRef(0),
     pendingZoom = useRef<{ top: number; left: number; x: number; y: number; ratio: number } | undefined>(undefined),
     ocrEpoch = useRef(0),
     pdfOwned = useRef(new Set<PDFDocumentProxy>()),
@@ -133,29 +150,31 @@ export default function App() {
     const note = projectRef.current?.notes.find((n) => n.id === target?.noteId);
     return note ? `${note.id}:${answerFor(note, target?.messageId)?.id ?? "draft"}` : "pdf";
   }
+  function clearSelection() {
+    selectionEpoch.current++; setSelection(undefined); setAnswerSelection(undefined); setCitationAnchor(undefined); setDraftId(undefined);
+    window.getSelection()?.removeAllRanges();
+  }
   function rememberPosition() {
     const root = reader.current;
     if (root) {
       const bounds = root.getBoundingClientRect();
       const sheet = !readingView.current ? [...root.querySelectorAll<HTMLElement>("[data-pdf-page]")]
-        .find((element) => element.getBoundingClientRect().bottom > bounds.top) : undefined;
+        .find((element) => projectRef.current?.view.direction === "horizontal" ? element.getBoundingClientRect().right > bounds.left : element.getBoundingClientRect().bottom > bounds.top) : undefined;
       positions.current.set(viewKey(readingView.current), {
         top: root.scrollTop, left: root.scrollLeft,
-        ...(sheet ? { page: Number(sheet.dataset.pdfPage), pageOffset: bounds.top - sheet.getBoundingClientRect().top } : {}),
+        ...(sheet ? { page: Number(sheet.dataset.pdfPage), pageOffset: projectRef.current?.view.direction === "horizontal" ? bounds.left - sheet.getBoundingClientRect().left : bounds.top - sheet.getBoundingClientRect().top } : {}),
       });
     }
   }
   function navigate(target?: ReadingTarget, page?: number) {
     rememberPosition();
-    setLibraryVisible(false);
+    setLibraryVisible(false); setSidebarOpen(false);
     readingView.current = target;
     pendingNavigation.current = { key: viewKey(target), page };
     setFocusId(target?.noteId);
     setReadingMessageId(target?.messageId);
-    setSelection(undefined);
-    setAnswerSelection(undefined);
+    clearSelection();
     setRegion(false);
-    window.getSelection()?.removeAllRanges();
     setNavigation((value) => value + 1);
     if (target && ocr !== null) {
       ocrEpoch.current++;
@@ -169,65 +188,51 @@ export default function App() {
     if (!root || !pending) return;
     pendingNavigation.current = undefined;
     const position = positions.current.get(pending.key);
-    root.scrollTop = position?.top ?? 0;
-    root.scrollLeft = position?.left ?? 0;
+    root.scrollTop = pending.page ? 0 : position?.top ?? 0;
+    root.scrollLeft = pending.page ? 0 : position?.left ?? 0;
     const targetPage = pending.page ?? position?.page;
     if (targetPage && pending.key === "pdf") {
       const sheet = root.querySelector<HTMLElement>(`[data-pdf-page="${targetPage}"]`);
-      if (sheet) root.scrollTop += sheet.getBoundingClientRect().top - root.getBoundingClientRect().top + (pending.page ? -20 : position?.pageOffset ?? 0);
+      if (sheet) {
+        const offset = pending.page ? 0 : position?.pageOffset ?? 0;
+        if (projectRef.current?.view.direction === "horizontal") root.scrollLeft += sheet.getBoundingClientRect().left - root.getBoundingClientRect().left + offset;
+        else root.scrollTop += sheet.getBoundingClientRect().top - root.getBoundingClientRect().top + offset;
+      }
     }
-  }, [navigation, project?.document.id]);
-  const update = useCallback((fn: (p: Project) => void) => {
+  }, [navigation, project?.document.id, project?.view.direction]);
+  const update = useCallback((fn: (p: Project) => void, noteScope?: string | null) => {
     const p = projectRef.current;
     if (!p) return;
-    const n: Project = {
-      ...p,
-      document: { ...p.document, updatedAt: Date.now() },
-      notes: p.notes.map((n) => ({
-        ...n,
-        messages: n.messages.map((m) => ({ ...m })),
-        draftAssetIds: [...n.draftAssetIds],
-      })),
-      pages: [...p.pages],
-      assets: [...p.assets],
-      templates: p.templates.map((t) => ({ ...t })),
-      view: { ...p.view },
-    };
-    fn(n);
-    projectRef.current = n;
-    revision.current++;
-    setProject(n);
-    setSaved("正在保存…");
+    const n = copyProjectForEdit(p, noteScope);
+    fn(n); projectRef.current = n; revision.current++; setProject(n); setSaved("正在保存…");
+  }, []);
+  const updateView = useCallback((fn: (p: Project) => void) => {
+    const p = projectRef.current;
+    if (!p) return;
+    const next = { ...p, view: { ...p.view } };
+    fn(next); projectRef.current = next; setProject(next);
+    try { localStorage.setItem(`inkask:view:${p.document.id}`, JSON.stringify(next.view)); } catch { /* Reading remains available if browser preferences are full. */ }
   }, []);
   const persist = useCallback(async () => {
     const p = projectRef.current;
-    if (!p) return;
+    if (!p || savedRevision.current === revision.current) return;
     const rev = revision.current;
-    queue.current = queue.current
-      .catch(() => {})
-      .then(async () => {
-        try {
-          await saveProject(p);
-          if (rev === revision.current) {
-            savedRevision.current = rev;
-            setSaved("已保存在本机");
-            setSaveFailed(false);
-          }
-        } catch (e) {
-          setSaved("保存失败");
-          setSaveFailed(true);
-          setNotice("本机保存失败，请导出项目备份：" + err(e));
-          throw e;
-        }
-      });
-    await queue.current;
+    queue.current ??= new ProjectSaveQueue(saveProject);
+    try {
+      const written = await queue.current.flush({ project: p, revision: rev }, () => projectRef.current ? { project: projectRef.current, revision: revision.current } : undefined);
+      if (written.revision === revision.current && written.project.document.id === projectRef.current?.document.id) {
+        savedRevision.current = written.revision; setSaved("已保存在本机"); setSaveFailed(false);
+      }
+    } catch (e) {
+      setSaved("保存失败"); setSaveFailed(true); setNotice("本机保存失败，请导出项目备份：" + err(e)); throw e;
+    }
   }, []);
   useEffect(() => {
-    if (!project || timer.current) return;
+    if (!project || savedRevision.current === revision.current || timer.current) return;
     timer.current = setTimeout(() => {
       timer.current = undefined;
       void persist().catch(() => {});
-    }, 700);
+    }, controllers.current.size ? 5000 : 700);
   }, [project, persist]);
   useEffect(() => {
     const before = (e: BeforeUnloadEvent) => {
@@ -279,8 +284,8 @@ export default function App() {
   function showLibrary(folderId?: string) {
     rememberPosition();
     openRequest.current++;
-    setLoading(false); setLibraryVisible(true); setCurrentFolder(folderId);
-    setSelection(undefined); setAnswerSelection(undefined); setRegion(false); setSearch("");
+    setLoading(false); setLibraryVisible(true); setSidebarOpen(false); setCurrentFolder(folderId);
+    clearSelection(); setRegion(false); setSearch("");
   }
   async function openExisting(id: string, request = ++openRequest.current) {
     if (projectRef.current?.document.id === id) {
@@ -290,7 +295,7 @@ export default function App() {
     try {
       const p = await loadProject(id);
       if (request !== openRequest.current) return;
-      if (p && await activate(p, request)) setCurrentFolder(documentFolders[id]);
+      if (p && await activate(p, request, true)) setCurrentFolder(documentFolders[id]);
     } catch (e) {
       if (request === openRequest.current) setNotice("打开失败：" + err(e));
     } finally {
@@ -308,18 +313,18 @@ export default function App() {
           update((p) => {
             if (p.pages.some((x) => x.page === page && x.source === "ocr")) return;
             p.pages = p.pages.filter((x) => x.page !== page); p.pages.push(text);
-          });
+          }, null);
       } catch {
         if (epoch === openEpoch.current && projectRef.current?.document.id === documentId)
           update((p) => {
             const x = p.pages.find((x) => x.page === page);
             if (x) x.status = "error";
             else p.pages.push({ page, text: "", words: [], source: "native", status: "error", width: 600, height: 800 });
-          });
+          }, null);
       }
     }
   }
-  async function activate(p: Project, request: number): Promise<boolean> {
+  async function activate(p: Project, request: number, alreadySaved = false): Promise<boolean> {
     const d = await openPdf(p.document.pdf);
     if (request !== openRequest.current) { await d.destroy(); return false; }
     let committed = false;
@@ -339,12 +344,20 @@ export default function App() {
       const previous = pdfRef.current;
       pdfOwned.current.add(d); pdfRef.current = d; setPdf(d);
       p.document.pageCount = d.numPages;
-      projectRef.current = p; revision.current++; setProject(p); setSaved("正在保存…");
-      setSelection(undefined); setFocusId(undefined); setReadingMessageId(undefined);
+      try {
+        const view = JSON.parse(localStorage.getItem(`inkask:view:${p.document.id}`) ?? "null");
+        if (view && Number.isInteger(view.page) && view.page >= 1 && view.page <= d.numPages && Number.isFinite(view.scale) && view.scale >= 0.25 && view.scale <= 3 && [0,90,180,270].includes(view.rotation))
+          p.view = { page: view.page, scale: view.scale, rotation: view.rotation, direction: view.direction === "horizontal" ? "horizontal" : "vertical" };
+      } catch { /* Ignore invalid reading preferences. */ }
+      sourcePreviews.current.clear();
+      projectRef.current = p; revision.current++;
+      if (alreadySaved) savedRevision.current = revision.current;
+      setProject(p); setSaved(alreadySaved ? "已保存在本机" : "正在保存…");
+      clearSelection(); setFocusId(undefined); setReadingMessageId(undefined);
       setAnswerSelection(undefined); setActiveId(undefined); setRegion(false);
       readingView.current = undefined; positions.current.clear(); pdfPageSizes.current.clear();
       pendingNavigation.current = { key: "pdf", page: p.view.page };
-      setLibraryVisible(false); setNavigation((value) => value + 1);
+      setLibraryVisible(false); setSidebarOpen(false); setNavigation((value) => value + 1);
       committed = true;
       if (previous) { pdfOwned.current.delete(previous); void previous.destroy(); }
       void extractTextPages(d, p.document.id, epoch);
@@ -392,7 +405,7 @@ export default function App() {
     const p = projectRef.current;
     if (!p) return;
     const target = Math.min(Math.max(1, page), p.document.pageCount);
-    update((project) => { project.view.page = target; });
+    updateView((project) => { project.view.page = target; });
     navigate(undefined, target);
     setActiveId(undefined);
   }
@@ -417,7 +430,7 @@ export default function App() {
       navigate(parent);
     }
     for (const child of ids) controllers.current.get(child)?.abort();
-    update((project) => { project.notes = project.notes.filter((note) => !ids.has(note.id)); });
+    update((project) => { project.notes = project.notes.filter((note) => !ids.has(note.id)); }, null);
   }
   async function attach(id: string, files: File[]) {
     for (const file of files) {
@@ -440,7 +453,7 @@ export default function App() {
           p.assets.push(asset);
           n.draftAssetIds.push(asset.id);
         } else setNotice("每次提问最多附加 4 张图片。");
-      });
+      }, id);
     }
   }
   async function screenshot(note: Note, attachToQuestion = true) {
@@ -458,7 +471,7 @@ export default function App() {
         update((project) => {
           const n = project.notes.find((n) => n.id === note.id);
           if (n) { project.assets.push(asset); n.sourceAssetId = asset.id; }
-        });
+        }, note.id);
         return asset;
       })();
       captures.current.set(note.id, pending);
@@ -473,36 +486,97 @@ export default function App() {
             if (n.draftAssetIds.length < 4) n.draftAssetIds.push(asset.id);
             else setNotice("每次提问最多附加 4 张图片。");
           }
-        });
+        }, note.id);
+      return asset;
     } catch (e) { setNotice("截图失败：" + err(e)); }
   }
-  async function makeNote(task: Task, withScreenshot = false) {
+  async function submitSelection(task: Task, question: string, images: File[], includeCrop: boolean) {
     const p = projectRef.current;
-    if (!p) return;
-    if (answerSelection) {
+    if (!p || switchLocks.current.size) return;
+    if (!status.configured) { setSettings(true); return; }
+    const documentId = p.document.id, selectionGeneration = selectionEpoch.current, request = openRequest.current;
+    let n = p.notes.find((note) => note.id === draftId);
+    const template = p.templates.find((template) => template.task === task) ?? p.templates[0];
+    if (!n && answerSelection) {
       const parent = p.notes.find((note) => note.id === answerSelection.noteId);
-      const message = parent?.messages.find((message) => message.id === answerSelection.messageId);
-      if (parent && message) branch(parent, message, answerSelection.quote, task, answerSelection.anchor);
-      return;
+      if (!parent) return;
+      n = createBranch(p, parent, answerSelection.messageId, answerSelection.quote, task, answerSelection.anchor);
+    } else if (!n && selection) {
+      n = { id: uid(), title: selection.quote ? selection.quote.slice(0, 24) : "关于这片区域", anchor: structuredClone(selection), inheritedHistory: [], collapsed: false, task, templateId: template.id, draft: "", draftAssetIds: [], messages: [], createdAt: Date.now() };
     }
-    if (!selection) return;
-    const template = p.templates.find((t) => t.task === task) ?? p.templates[0];
-    const n: Note = {
-      id: uid(),
-      title: selection.quote ? selection.quote.slice(0, 24) : "关于这片区域",
-      anchor: structuredClone(selection),
-      inheritedHistory: [],
-      collapsed: false,
-      task,
-      templateId: template.id,
-      draft: "",
-      draftAssetIds: [],
-      messages: [],
-      createdAt: Date.now(),
-    };
-    update((p) => p.notes.push(n));
-    focus(n.id);
-    await screenshot(n, withScreenshot || !n.anchor.quote);
+    if (!n) return;
+    const id = n.id, note = n;
+    update((project) => {
+      if (!project.notes.some((item) => item.id === id)) project.notes.push(note);
+      const current = project.notes.find((item) => item.id === id)!;
+      current.task = task; current.templateId = template.id; current.draft = question;
+    }, id);
+    if (includeCrop && !note.parentId) {
+      const asset = await screenshot(note, true);
+      if (!asset && !note.anchor.quote) throw new Error("选区截图未完成，请重试。");
+    }
+    if (projectRef.current?.document.id !== documentId || selectionGeneration !== selectionEpoch.current || request !== openRequest.current) return;
+    if (images.length) await attach(id, images);
+    if (projectRef.current?.document.id !== documentId || selectionGeneration !== selectionEpoch.current || request !== openRequest.current) return;
+    focus(id);
+    void send(id);
+  }
+  function selectPdf(anchor: Anchor) {
+    setAnswerSelection(undefined); setDraftId(undefined); setCitationAnchor(undefined); setSelection(anchor);
+    const epoch = ++selectionEpoch.current, d = pdfRef.current, view = projectRef.current?.view;
+    if (!d || !view) return;
+    void d.getPage(anchor.page).then((page) => {
+      if (epoch === selectionEpoch.current) setSelectionViewport(page.getViewport({ scale: view.scale, rotation: (page.rotate + view.rotation) % 360 }));
+    }).catch(() => {});
+  }
+  const selectionBounds = useCallback(() => {
+    const root = reader.current;
+    if (!root) return;
+    if (draftId) return root.querySelector(".answer-document-heading")?.getBoundingClientRect();
+    if (selection && selectionViewport) {
+      const page = root.querySelector(`[data-pdf-page="${selection.page}"] .pdf-page`);
+      const rect = unionRects(selection.rects.map((rect) => screenRect(selectionViewport, rect)));
+      if (!page || !rect) return;
+      const bounds = page.getBoundingClientRect();
+      return { left: bounds.left + rect[0], top: bounds.top + rect[1], right: bounds.left + rect[2], bottom: bounds.top + rect[3] };
+    }
+    if (answerSelection) {
+      const body = root.querySelector<HTMLElement>(".answer-body");
+      return body ? answerAnchorRange(body, answerSelection.anchor, answerSelection.quote)?.getBoundingClientRect() : undefined;
+    }
+  }, [selection, selectionViewport, answerSelection, draftId]);
+  const selectionBoundary = useCallback(() => {
+    const root = reader.current?.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
+    return { left: Math.max(left, root?.left ?? left), top: Math.max(top, root?.top ?? top), right: Math.min(left + (viewport?.width ?? window.innerWidth), root?.right ?? window.innerWidth), bottom: Math.min(top + (viewport?.height ?? window.innerHeight), root?.bottom ?? window.innerHeight) };
+  }, []);
+  const previewSource = useCallback(async (source: Source): Promise<SourcePreviewResult | undefined> => {
+    const p = projectRef.current, d = pdfRef.current;
+    if (!p || !d) return;
+    const anchor = sourceAnchor(source, p.pages.find((page) => page.page === source.page));
+    const rect = anchor && unionRects(anchor.rects);
+    if (!anchor || !rect) return;
+    const key = JSON.stringify([p.document.id, source.page, rect, p.view.rotation]);
+    const cached = sourcePreviews.current.get(key);
+    if (cached) { sourcePreviews.current.delete(key); sourcePreviews.current.set(key, cached); return cached; }
+    const epoch = openEpoch.current;
+    const pending = sourceQueue.current.catch(() => {}).then(async () => {
+      if (epoch !== openEpoch.current) return;
+      const { blob } = await renderImage(await d.getPage(source.page), rect, p.view.rotation);
+      if (epoch !== openEpoch.current) return;
+      return { blob, anchor };
+    });
+    sourceQueue.current = pending.then(() => {}, () => {});
+    sourcePreviews.current.set(key, pending);
+    while (sourcePreviews.current.size > 12) sourcePreviews.current.delete(sourcePreviews.current.keys().next().value!);
+    void pending.catch(() => sourcePreviews.current.delete(key));
+    return pending;
+  }, []);
+  function locateSource(source: Source) {
+    pageTo(source.page);
+    const anchor = sourceAnchor(source, projectRef.current?.pages.find((page) => page.page === source.page));
+    setCitationAnchor(anchor);
   }
   function context(n: Note) {
     const p = projectRef.current!;
@@ -576,7 +650,7 @@ export default function App() {
       });
       note.draft = "";
       note.draftAssetIds = [];
-    });
+    }, id);
     const patch = (fn: (m: Message) => void) => {
       if (projectRef.current?.document.id !== documentId || controllers.current.get(id) !== control) return;
       update((p) => {
@@ -584,7 +658,7 @@ export default function App() {
           .find((n) => n.id === id)
           ?.messages.find((m) => m.id === answerId);
         if (m) fn(m);
-      });
+      }, id);
     };
     try {
       const images = await Promise.all(
@@ -627,12 +701,10 @@ export default function App() {
       }
     }
   }
-  function branch(parent: Note, message: Message, quote?: string, task: Task = "custom", answerAnchor?: AnswerAnchor) {
-    const p = projectRef.current;
-    if (!p) return;
-    const n = createBranch(p, parent, message.id, quote, task, answerAnchor);
-    update((p) => p.notes.push(n));
-    focus(n.id);
+  function branch(parent: Note, message: Message, quote?: string, _task: Task = "custom", anchor?: AnswerAnchor) {
+    const selected = anchor ?? { start: 0, end: (quote ?? message.content).length, quote: quote ?? message.content };
+    selectionEpoch.current++; setSelection(undefined); setDraftId(undefined);
+    setAnswerSelection({ noteId: parent.id, messageId: message.id, quote: selected.quote, anchor: selected });
   }
   async function recognize(rect?: Anchor["rects"][0], selectedPage?: number) {
     const d = pdfRef.current,
@@ -757,12 +829,12 @@ export default function App() {
       const bounds = root.getBoundingClientRect();
       pendingZoom.current = { top: root.scrollTop, left: root.scrollLeft, x: event.clientX - bounds.left, y: event.clientY - bounds.top, ratio: next / old };
       if (readingView.current) { answerScaleRef.current = next; setAnswerScale(next); }
-      else update((p) => { p.view.scale = next; });
+      else updateView((p) => { p.view.scale = next; });
       setSelection(undefined); setAnswerSelection(undefined);
     };
     root.addEventListener("wheel", wheel, { passive: false });
     return () => root.removeEventListener("wheel", wheel);
-  }, [libraryVisible, project?.document.id, focusId, update]);
+  }, [libraryVisible, project?.document.id, focusId, updateView]);
   useLayoutEffect(() => {
     const root = reader.current, zoom = pendingZoom.current;
     if (!root || !zoom) return;
@@ -770,6 +842,19 @@ export default function App() {
     root.scrollTop = (zoom.top + zoom.y) * zoom.ratio - zoom.y;
     root.scrollLeft = (zoom.left + zoom.x) * zoom.ratio - zoom.x;
   }, [project?.view.scale, answerScale]);
+  useEffect(() => {
+    const pointer = (event: PointerEvent) => {
+      const target = event.target as Element;
+      if (target.closest(".selection-popover,.source-popover,.source-link") || (settings && target.closest(".settings-modal,.modal-backdrop"))) return;
+      if (selection || answerSelection || draftId || citationAnchor) clearSelection();
+    };
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { if (settings) { setSettings(false); return; } clearSelection(); setSidebarOpen(false); }
+      if ((event.metaKey || event.ctrlKey) && event.key === "\\") { event.preventDefault(); setSidebarOpen((open) => !open); }
+    };
+    document.addEventListener("pointerdown", pointer); document.addEventListener("keydown", keyboard);
+    return () => { document.removeEventListener("pointerdown", pointer); document.removeEventListener("keydown", keyboard); };
+  }, [selection, answerSelection, draftId, citationAnchor, settings]);
   const page = project?.view.page ?? 1,
     currentText = project?.pages.find((p) => p.page === page),
     roots =
@@ -780,7 +865,7 @@ export default function App() {
   const sidebarDocuments = libraryDocuments(documents, documentFolders, currentFolder, search);
   return (
     <div
-      className="app-shell"
+      className={"app-shell " + (sidebarOpen ? "sidebar-visible" : "")}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         if (e.target instanceof Element && e.target.closest(".composer"))
@@ -812,7 +897,9 @@ export default function App() {
           e.target.value = "";
         }}
       />
-      <aside className="sidebar">
+      {sidebarOpen && <button className="sidebar-backdrop" aria-label="收起资料侧栏" onClick={() => setSidebarOpen(false)} />}
+      <aside className={"sidebar floating-sidebar " + (sidebarOpen ? "is-open" : "")} inert={!sidebarOpen} aria-label="资料侧栏">
+        <button className="sidebar-close icon-button" aria-label="关闭资料侧栏" onClick={() => setSidebarOpen(false)}><X size={17} /></button>
         <a
           className="brand"
           href="#"
@@ -921,6 +1008,7 @@ export default function App() {
       <main className="main">
         <header className="topbar">
           <div className="breadcrumb">
+            <button className="sidebar-toggle icon-button" aria-label="显示资料侧栏" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(!sidebarOpen)}><PanelLeft size={18} /></button>
             <BookOpen size={16} />
             <button onClick={() => showLibrary()}>阅读空间</button>
             {project && !libraryVisible && (
@@ -999,7 +1087,8 @@ export default function App() {
             onCreate={async (name) => { await createFolder(name, currentFolder); await refresh(); }}
             onRename={async (id, name) => { await renameFolder(id, name); await refresh(); }}
             onDeleteFolder={async (id) => { await deleteFolder(id); await refresh(); }}
-            onMove={async (id, folderId) => { await moveDocument(id, folderId); await refresh(); }} />
+            onMove={async (id, folderId) => { await moveDocument(id, folderId); await refresh(); }}
+            onMoveFolder={async (id, parentId) => { await moveFolder(id, parentId); await refresh(); }} />
         ) : (
           <>
             {focused ? <div className="reader-toolbar answer-navigation">
@@ -1022,18 +1111,23 @@ export default function App() {
               </div>
               <div className="toolbar-divider" />
               <div className="zoom-controls">
-                <button className="icon-button" aria-label="缩小" onClick={() => update((p) => { p.view.scale = Math.max(0.25, p.view.scale - 0.1); })}><Minus size={15} /></button>
+                <button className="icon-button" aria-label="缩小" onClick={() => updateView((p) => { p.view.scale = Math.max(0.25, p.view.scale - 0.1); })}><Minus size={15} /></button>
                 <span>{Math.round(project.view.scale * 100)}%</span>
-                <button className="icon-button" aria-label="放大" onClick={() => update((p) => { p.view.scale = Math.min(3, p.view.scale + 0.1); })}><Plus size={15} /></button>
-                <button className="icon-button" aria-label="旋转页面" onClick={() => update((p) => { p.view.rotation = (p.view.rotation + 90) % 360; })}><RotateCw size={15} /></button>
-                <button className="icon-button" aria-label="适合宽度" onClick={() => update((p) => {
+                <button className="icon-button" aria-label="放大" onClick={() => updateView((p) => { p.view.scale = Math.min(3, p.view.scale + 0.1); })}><Plus size={15} /></button>
+                <button className="icon-button" aria-label="旋转页面" onClick={() => updateView((p) => { p.view.rotation = (p.view.rotation + 90) % 360; })}><RotateCw size={15} /></button>
+                <button className="icon-button" aria-label="适合宽度" onClick={() => updateView((p) => {
                   const text = pdfPageSizes.current.get(p.view.page) ?? p.pages.find((item) => item.page === p.view.page);
                   const width = p.view.rotation % 180 ? text?.height ?? 800 : text?.width ?? 600;
                   p.view.scale = Math.max(0.4, Math.min(2, ((reader.current?.clientWidth ?? 700) - 76) / width));
                 })}><Maximize2 size={15} /></button>
               </div>
               <div className="toolbar-spacer" />
-              <button className={"tool-button " + (region ? "selected" : "")} onClick={() => { setRegion(!region); setSelection(undefined); }}>
+              <select className="reading-direction" aria-label="页面拼接方向" value={project.view.direction ?? "vertical"} onChange={(event) => {
+                const page = projectRef.current?.view.page;
+                updateView((p) => { p.view.direction = event.target.value as "vertical" | "horizontal"; });
+                navigate(undefined, page);
+              }}><option value="vertical">上下拼接</option><option value="horizontal">左右拼接</option></select>
+              <button className={"tool-button " + (region ? "selected" : "")} onClick={() => { setRegion(!region); clearSelection(); }}>
                 <Highlighter size={15} />{region ? "正在框选" : "框选区域"}
               </button>
               {ocr !== null ? <button className="tool-button" onClick={() => void stopOcr()}><Loader2 size={14} className="spin" />{Math.round(ocr * 100)}% · 取消</button> : canOcr &&
@@ -1047,58 +1141,20 @@ export default function App() {
             <div ref={reader} className={"reader-area " + (focused ? "answer-reader-area" : "pdf-reader-area")} style={{ "--answer-scale": answerScale } as React.CSSProperties}>
               {focused ? <AnswerReader key={`${focused.id}:${readingMessageId ?? "latest"}`} note={focused} messageId={readingMessageId} activeId={activeId} project={project}
                 busy={busyIds.has(focused.id)} apiReady={status.configured && !switching} context={context}
-                onUpdate={(id, change) => update((p) => { const note = p.notes.find((n) => n.id === id); if (note) Object.assign(note, change); })}
+                onUpdate={(id, change) => update((p) => { const note = p.notes.find((n) => n.id === id); if (note) Object.assign(note, change); }, id)}
                 onSend={(id, prompt) => void send(id, prompt)} onStop={(id) => controllers.current.get(id)?.abort()}
                 onRetry={(id) => void send(id, undefined, true)} onBranch={(note, message, anchor) => branch(note, message, anchor?.quote, "custom", anchor)} onDelete={removeNote}
-                onPage={pageTo} onFocus={focus} onAttach={(id, files) => void attach(id, files)} onScreenshot={(note) => void screenshot(note)} onSourceImage={(note) => void screenshot(note, false)}
-                onSelect={(note, message, anchor) => { setSelection(undefined); setAnswerSelection({ noteId: note.id, messageId: message.id, quote: anchor.quote, anchor }); }} onClearSelection={() => setAnswerSelection(undefined)}
-              /> : pdf && <ContinuousPdf pdf={pdf} project={project} scrollRoot={reader} pageSizes={pdfPageSizes.current} activeId={activeId} regionMode={region}
-                onSelect={(anchor) => { setAnswerSelection(undefined); setSelection(anchor); }} onFocus={focus} onError={setNotice}
+                onPage={pageTo} onPreviewSource={previewSource} onLocateSource={locateSource} onResume={(note) => { clearSelection(); setDraftId(note.id); }} selection={answerSelection?.anchor} onFocus={focus} onAttach={(id, files) => void attach(id, files)} onScreenshot={(note) => void screenshot(note)} onSourceImage={(note) => void screenshot(note, false)}
+                onSelect={(note, message, anchor) => { selectionEpoch.current++; setSelection(undefined); setDraftId(undefined); setAnswerSelection({ noteId: note.id, messageId: message.id, quote: anchor.quote, anchor }); }} onClearSelection={() => setAnswerSelection(undefined)}
+              /> : pdf && <ContinuousPdf pdf={pdf} project={project} scrollRoot={reader} pageSizes={pdfPageSizes.current} activeId={activeId} regionMode={region} direction={project.view.direction} selection={selection ?? citationAnchor}
+                onSelect={selectPdf} onFocus={focus} onError={setNotice}
                 onClearSelection={() => setSelection(undefined)}
-                onPageChange={(page) => { if (projectRef.current?.view.page !== page) update((p) => { p.view.page = page; }); }} />}
+                onPageChange={(page) => { if (projectRef.current?.view.page !== page) updateView((p) => { p.view.page = page; }); }} />}
             </div>
-            {(selection || answerSelection) && (
-              <div className="selection-toolbar" onMouseDown={(e) => e.preventDefault()}>
-                <div className="selected-excerpt">
-                  {answerSelection ? <MathText>{answerSelection.quote}</MathText> : (selection?.quote)
-                    ? `“${selection.quote.slice(0, 50)}${selection.quote.length > 50 ? "…" : ""}”`
-                    : "已选择页面区域"}
-                </div>
-                <div className="selection-actions">
-                  {(
-                    [
-                      "explain",
-                      "formula",
-                      "summarize",
-                      "translate",
-                      "custom",
-                    ] as Task[]
-                  ).map((t) => (
-                    <button key={t} onClick={() => void makeNote(t)}>
-                      {t === "explain" && <Sparkles size={13} />}{" "}
-                      {TASK_LABELS[t]}
-                    </button>
-                  ))}
-                  {!answerSelection && <button onClick={() => void makeNote("custom", true)}>截图提问</button>}
-                  {selection && !selection.quote && project.pages.some((item) => item.page === selection.page && (item.source === "ocr" || !item.text.trim())) && (
-                    <button
-                      disabled={ocr !== null}
-                      onClick={() => void recognize(selection.rects[0], selection.page)}
-                    >
-                      <ScanText size={13} />
-                      识别区域
-                    </button>
-                  )}
-                  <button
-                    className="icon-button"
-                    aria-label="取消选区"
-                    onClick={() => { setSelection(undefined); setAnswerSelection(undefined); window.getSelection()?.removeAllRanges(); }}
-                  >
-                    <X size={15} />
-                  </button>
-                </div>
-              </div>
-            )}
+            {(selection || answerSelection || draftId) && <SelectionPopover key={draftId ?? JSON.stringify(selection ?? answerSelection?.anchor)}
+              quote={selection?.quote ?? answerSelection?.quote ?? focused?.anchor.quote ?? ""} initialQuestion={draftId ? focused?.draft : undefined}
+              imageOnly={!!selection && !selection.quote} cropAvailable={!answerSelection && (!draftId || !focused?.parentId)} apiReady={status.configured && !switching}
+              getAnchor={selectionBounds} boundary={selectionBoundary} onSubmit={submitSelection} onClose={clearSelection} onSettings={() => setSettings(true)} />}
           </>
         )}
         <footer className="app-footer">

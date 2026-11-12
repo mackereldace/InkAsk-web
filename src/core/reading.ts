@@ -13,6 +13,7 @@ export function answerFor(note: Note, messageId?: string): Message | undefined {
 }
 
 export function readingTrail(notes: Note[], noteId?: string): Note[] {
+  if (!noteId) return [];
   const byId = new Map(notes.map((note) => [note.id, note]));
   const trail: Note[] = [];
   const seen = new Set<string>();

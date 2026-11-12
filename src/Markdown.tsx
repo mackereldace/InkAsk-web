@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { X } from "lucide-react";
+import SourceCitation, { type PreviewSource } from "./SourceCitation";
 import type { Asset, Message, Project, Source } from "./types";
 import { normalizeMathMarkdown } from "./core/math-markdown";
 
@@ -51,6 +52,8 @@ interface RenderContext {
   assets: Asset[];
   sources?: Source[];
   onPage: (page: number) => void;
+  onPreviewSource?: PreviewSource;
+  onLocateSource?: (source: Source) => void;
 }
 const MarkdownContext = createContext<RenderContext>({ assets: [], onPage: () => {} });
 
@@ -60,22 +63,24 @@ function MarkdownImage({ src, alt }: ComponentProps<"img">) {
   return asset ? <AssetImage asset={asset} /> : <span className="muted">[未附加的图片：{alt}]</span>;
 }
 function MarkdownLink({ href, children }: ComponentProps<"a">) {
-  const { sources, onPage } = useContext(MarkdownContext);
+  const { sources, onPage, onPreviewSource, onLocateSource } = useContext(MarkdownContext);
   if (href?.startsWith("#source-")) {
     const source = sources?.find((item) => item.id === href.slice(8));
-    return source ? <button className="source-link" title={source.text} onClick={() => onPage(source.page)}>第 {source.page} 页</button> : <span>{children}</span>;
+    return source ? <SourceCitation source={source} preview={onPreviewSource} onLocate={onLocateSource ?? ((source) => onPage(source.page))} /> : <span>{children}</span>;
   }
   return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
 }
 // Stable component identities keep image effects and Blob URLs mounted across measurements.
 const MARKDOWN_COMPONENTS: Components = { img: MarkdownImage, a: MarkdownLink };
-export function Markdown({ message, project, onPage }: {
+export function Markdown({ message, project, onPage, onPreviewSource, onLocateSource }: {
   message: Pick<Message, "content" | "sources">;
   project: Project;
   onPage: (page: number) => void;
+  onPreviewSource?: PreviewSource;
+  onLocateSource?: (source: Source) => void;
 }) {
-  const context = useMemo(() => ({ assets: project.assets, sources: message.sources, onPage }), [project.assets, message.sources, onPage]);
-  const content = message.content.replace(/\[([S]\d+)\]/g, (all, id: string) =>
+  const context = useMemo(() => ({ assets: project.assets, sources: message.sources, onPage, onPreviewSource, onLocateSource }), [project.assets, message.sources, onPage, onPreviewSource, onLocateSource]);
+  const content = message.content.replace(/(?<!\[)\[([S]\d+)\](?!\()/g, (all, id: string) =>
     message.sources?.some((source) => source.id === id) ? `[${id}](#source-${id})` : all);
   return <MarkdownContext.Provider value={context}><ReactMarkdown
     remarkPlugins={[remarkGfm, remarkMath]}

@@ -554,6 +554,10 @@ function validateManifest(value: unknown): asserts value is Manifest {
           assertString(source.id, "source.id");
           assertString(source.text, "source.text");
           assertNumber(source.page, "source.page");
+          if (source.rects !== undefined) {
+            assertArray(source.rects, "source.rects");
+            source.rects.forEach((rect) => assertRect(rect, "source.rect"));
+          }
           if (
             !Number.isInteger(source.page) ||
             source.page < 1 ||
@@ -614,6 +618,7 @@ function validateManifest(value: unknown): asserts value is Manifest {
 
   assertNumber(project.view.page, "view.page");
   assertNumber(project.view.scale, "view.scale");
+  if (project.view.direction !== undefined && project.view.direction !== "vertical" && project.view.direction !== "horizontal") throw new Error("Invalid reading direction.");
   assertNumber(project.view.rotation, "view.rotation");
   if (!(project.templates as unknown[]).length)
     throw new Error("At least one prompt template is required.");

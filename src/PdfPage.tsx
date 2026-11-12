@@ -9,6 +9,7 @@ import {
 import type { Anchor, Note, PageText, Rect } from "./types";
 import AnnotationLayer from "./AnnotationLayer";
 import { MathText } from "./Markdown";
+import { startCanvasRender } from "./core/pdf-reader";
 interface Props {
   pdf: PDFDocumentProxy;
   page: number;
@@ -18,6 +19,7 @@ interface Props {
   notes: Note[];
   regionMode: boolean;
   activeId?: string;
+  selection?: Anchor;
   onSelect: (anchor: Anchor) => void;
   onFocus: (id: string) => void;
   onSize: (size: {
@@ -36,6 +38,7 @@ export default function PdfPage({
   notes,
   regionMode,
   activeId,
+  selection: selected,
   onSelect,
   onFocus,
   onSize,
@@ -53,60 +56,37 @@ export default function PdfPage({
   errorCallback.current = onError;
   useEffect(() => {
     let alive = true;
-    let rendering:
-      | ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["render"]>
-      | undefined;
+    const el = canvas.current, container = layer.current, wrapper = wrap.current;
+    if (!el || !container || !wrapper) return;
+    const ownsDom = () => alive && canvas.current === el && layer.current === container && wrap.current === wrapper && el.isConnected && container.isConnected;
+    let rendering: ReturnType<typeof startCanvasRender> | undefined;
     let textLayer: InstanceType<typeof pdfjs.TextLayer> | undefined;
     void (async () => {
       try {
         const pdfPage = await pdf.getPage(page);
-        if (!alive) return;
-        const viewport = pdfPage.getViewport({
-          scale,
-          rotation: (pdfPage.rotate + rotation) % 360,
-        });
+        if (!ownsDom()) return;
+        const viewport = pdfPage.getViewport({ scale, rotation: (pdfPage.rotate + rotation) % 360 });
         setVp(viewport);
-        sizeCallback.current({
-          width: viewport.width,
-          height: viewport.height,
-          viewport,
-        });
-        const el = canvas.current!,
-          container = layer.current!;
-        const ratio = window.devicePixelRatio || 1;
-        el.width = Math.ceil(viewport.width * ratio);
-        el.height = Math.ceil(viewport.height * ratio);
+        sizeCallback.current({ width: viewport.width, height: viewport.height, viewport });
+        // A size callback may synchronously unmount a virtualized page.
+        if (!ownsDom()) return;
         container.replaceChildren();
         container.style.setProperty("--total-scale-factor", String(scale));
-        rendering = pdfPage.render({
-          canvas: el,
-          canvasContext: el.getContext("2d")!,
-          viewport,
-          transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0],
-        });
-        await rendering.promise;
-        if (!alive || text?.source === "ocr") return;
+        rendering = startCanvasRender({ page: pdfPage, viewport, destination: el, isCurrent: ownsDom, ratio: window.devicePixelRatio || 1 });
+        if (!(await rendering.promise) || !ownsDom() || text?.source === "ocr") return;
         const content = await pdfPage.getTextContent();
-        if (!alive) return;
+        if (!ownsDom()) return;
         container.replaceChildren();
-        textLayer = new pdfjs.TextLayer({
-          textContentSource: content,
-          container,
-          viewport,
-        });
+        textLayer = new pdfjs.TextLayer({ textContentSource: content, container, viewport });
         await textLayer.render();
       } catch (e) {
-        if (
-          alive &&
-          !(e instanceof Error && e.name === "RenderingCancelledException")
-        )
+        if (ownsDom() && !(e instanceof Error && e.name === "RenderingCancelledException"))
           errorCallback.current("页面渲染失败：" + String(e));
       }
     })();
     return () => {
-      alive = false;
-      rendering?.cancel();
-      textLayer?.cancel();
+      alive = false; rendering?.cancel(); textLayer?.cancel();
+      if (!el.isConnected) { el.width = 0; el.height = 0; }
     };
   }, [pdf, page, scale, rotation, text?.source]);
   function selection() {
@@ -184,6 +164,13 @@ export default function PdfPage({
             })}
         </div>
       )}
+      {vp && selected?.page === page && <div className="pdf-selection" aria-label={selected.quote ? "已选择的 PDF 文字" : "已框选的 PDF 区域"}>
+        {selected.rects.map((rect, index) => {
+          const r = screenRect(vp, rect);
+          return <span key={index} className={"pdf-selection-rect " + (selected.quote ? "text-selection" : "area-selection")}
+            style={{ left: r[0], top: r[1], width: r[2] - r[0], height: r[3] - r[1] }} />;
+        })}
+      </div>}
       {vp && <AnnotationLayer width={vp.width} activeId={activeId} onFocus={onFocus}
         annotations={notes.map((note) => ({
           id: note.id, title: note.title,
@@ -211,21 +198,24 @@ export default function PdfPage({
               ]),
             );
           }}
-          onPointerUp={() => {
-            if (drag && vp && drag[2] - drag[0] > 8 && drag[3] - drag[1] > 8)
+          onPointerUp={(e) => {
+            const b = e.currentTarget.getBoundingClientRect();
+            const end = origin.current ? normalizeRect([...origin.current, Math.max(0, Math.min(b.width, e.clientX - b.left)), Math.max(0, Math.min(b.height, e.clientY - b.top))]) : undefined;
+            if (end && vp && end[2] - end[0] > 8 && end[3] - end[1] > 8)
               onSelect({
                 page,
                 quote: "",
                 rects: [
                   normalizeRect([
-                    ...vp.convertToPdfPoint(drag[0], drag[1]),
-                    ...vp.convertToPdfPoint(drag[2], drag[3]),
+                    ...vp.convertToPdfPoint(end[0], end[1]),
+                    ...vp.convertToPdfPoint(end[2], end[3]),
                   ]),
                 ],
               });
             origin.current = undefined;
             setDrag(undefined);
           }}
+          onPointerCancel={() => { origin.current = undefined; setDrag(undefined); }}
         >
           {drag && (
             <div

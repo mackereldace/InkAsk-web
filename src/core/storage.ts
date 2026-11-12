@@ -83,11 +83,13 @@ async function prepare(project: Project): Promise<{ value: StoredProject; binari
     }
     return { binaryId, type: blob.type };
   };
-  // Capture all mutable metadata before awaiting Blob conversion.
+  // Both callers own a private snapshot: saveProject captures it synchronously,
+  // and legacy migration has not returned its IDB copy to the caller yet. Reuse
+  // those nested metadata objects instead of cloning the full project twice.
   const { pdf, ...document } = project.document;
-  const assets = project.assets.map(({ data, ...asset }) => ({ data, metadata: structuredClone(asset) }));
+  const assets = project.assets.map(({ data, ...asset }) => ({ data, metadata: asset }));
   const { document: _document, assets: _assets, ...rest } = project;
-  const metadata = structuredClone({ ...rest, document });
+  const metadata = { ...rest, document };
   const pdfReference = await capture(pdf);
   const storedAssets = await Promise.all(assets.map(async ({ data, metadata: asset }) => ({ ...asset, data: await capture(data) })));
   return { value: { ...metadata, storageVersion: 2, document: { ...metadata.document, pdf: pdfReference }, assets: storedAssets }, binaries };
@@ -210,6 +212,25 @@ export async function renameFolder(id: string, name: string): Promise<void> {
     if (!folder) throw new Error("文件夹不存在。");
     await validateFolder(name, folder.parentId, id);
     await db().folders.update(id, { name });
+  });
+}
+export async function moveFolder(id: string, parentId?: string): Promise<void> {
+  parentId ||= undefined;
+  await db().transaction("rw", db().folders, async () => {
+    const folder = await db().folders.get(id);
+    if (!folder) throw new Error("文件夹不存在。");
+    const seen = new Set<string>();
+    let ancestor = parentId;
+    while (ancestor) {
+      if (ancestor === id) throw new Error("不能把文件夹移入自身或它的子文件夹。");
+      if (seen.has(ancestor)) throw new Error("目标目录的层级无效。");
+      seen.add(ancestor);
+      const target = await db().folders.get(ancestor);
+      if (!target) throw new Error("目标文件夹不存在。");
+      ancestor = target.parentId;
+    }
+    await validateFolder(folder.name, parentId, id);
+    await db().folders.update(id, { parentId });
   });
 }
 export async function deleteFolder(id: string): Promise<void> {

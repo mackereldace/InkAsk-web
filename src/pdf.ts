@@ -2,6 +2,7 @@ import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from "pdfjs-dist";
 import type { PageText, Rect } from "./types";
+import { boundedRenderRatio } from "./core/pdf-reader";
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 export { pdfjs };
 export type { PDFDocumentProxy, PDFPageProxy, PageViewport };
@@ -57,42 +58,25 @@ export async function renderImage(
   rect?: Rect,
   rotation = 0,
 ): Promise<{ blob: Blob; viewport: PageViewport; crop: Rect }> {
-  const viewport = page.getViewport({
-      scale: 2,
-      rotation: (page.rotate + rotation) % 360,
-    }),
-    canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
-  await page.render({
-    canvas,
-    canvasContext: canvas.getContext("2d")!,
-    viewport,
-  }).promise;
-  const crop = rect
-    ? screenRect(viewport, rect)
-    : ([0, 0, canvas.width, canvas.height] as Rect);
-  const out = document.createElement("canvas");
-  out.width = Math.max(1, Math.ceil(crop[2] - crop[0]));
-  out.height = Math.max(1, Math.ceil(crop[3] - crop[1]));
-  out
-    .getContext("2d")!
-    .drawImage(
-      canvas,
-      crop[0],
-      crop[1],
-      out.width,
-      out.height,
-      0,
-      0,
-      out.width,
-      out.height,
-    );
-  const blob = await new Promise<Blob>((resolve, reject) =>
-    out.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("无法生成截图"))),
-      "image/png",
-    ),
-  );
-  return { blob, viewport, crop };
+  const angle = (page.rotate + rotation) % 360;
+  let viewport = page.getViewport({ scale: 2, rotation: angle });
+  const cropAt = (viewport: PageViewport): Rect => {
+    const box = rect ? screenRect(viewport, rect) : [0, 0, viewport.width, viewport.height];
+    return [Math.max(0, Math.min(viewport.width, box[0])), Math.max(0, Math.min(viewport.height, box[1])), Math.max(0, Math.min(viewport.width, box[2])), Math.max(0, Math.min(viewport.height, box[3]))];
+  };
+  let crop = cropAt(viewport);
+  const ratio = boundedRenderRatio(crop[2] - crop[0], crop[3] - crop[1], 1);
+  if (ratio < 1) { viewport = page.getViewport({ scale: 2 * ratio, rotation: angle }); crop = cropAt(viewport); }
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil(crop[2] - crop[0]));
+  canvas.height = Math.max(1, Math.ceil(crop[3] - crop[1]));
+  try {
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("无法创建截图画布");
+    // Render directly into the crop, preserving the original PDF viewport used
+    // by OCR coordinates. No full-page intermediate bitmap is allocated.
+    await page.render({ canvas, canvasContext: context, viewport, transform: [1, 0, 0, 1, -crop[0], -crop[1]] }).promise;
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("无法生成截图")), "image/png"));
+    return { blob, viewport, crop };
+  } finally { canvas.width = 0; canvas.height = 0; }
 }

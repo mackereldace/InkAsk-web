@@ -18,3 +18,30 @@ export function libraryDocuments(documents: InkDocument[], membership: Record<st
   const query = search.trim().toLocaleLowerCase();
   return documents.filter((document) => query ? document.name.toLocaleLowerCase().includes(query) : (membership[document.id] || undefined) === folderId);
 }
+
+export interface LibraryItemRef { kind: "document" | "folder"; id: string }
+export const libraryItemKey = (item: LibraryItemRef): string => `${item.kind}:${item.id}`;
+
+export function selectLibraryItems(current: string[], ordered: string[], clicked: string, options: { additive?: boolean; range?: boolean; anchor?: string } = {}): string[] {
+  if (options.range && options.anchor && ordered.includes(options.anchor)) {
+    const from = ordered.indexOf(options.anchor), to = ordered.indexOf(clicked);
+    if (to < 0) return current;
+    const range = ordered.slice(Math.min(from, to), Math.max(from, to) + 1);
+    return options.additive ? [...new Set([...current, ...range])] : range;
+  }
+  if (options.additive) return current.includes(clicked) ? current.filter((key) => key !== clicked) : [...current, clicked];
+  return [clicked];
+}
+export function canMoveFolder(folders: WorkspaceFolder[], id: string, destination?: string): boolean {
+  return folders.some((folder) => folder.id === id) && (!destination || folders.some((folder) => folder.id === destination)) &&
+    !folderTrail(folders, destination).some((folder) => folder.id === id);
+}
+/** Moving a folder carries its contents, so don't separately move selected descendants. */
+export function topLevelMoveItems(items: LibraryItemRef[], folders: WorkspaceFolder[], membership: Record<string, string>): LibraryItemRef[] {
+  const unique = [...new Map(items.map((item) => [libraryItemKey(item), item])).values()];
+  const selectedFolders = new Set(unique.filter((item) => item.kind === "folder").map((item) => item.id));
+  return unique.filter((item) => {
+    const parent = item.kind === "folder" ? folders.find((folder) => folder.id === item.id)?.parentId : membership[item.id];
+    return !folderTrail(folders, parent).some((folder) => selectedFolders.has(folder.id));
+  });
+}

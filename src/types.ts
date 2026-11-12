@@ -20,6 +20,7 @@ export interface Anchor {
   quote: string;
 }
 export interface Source {
+  rects?: Rect[];
   id: string;
   page: number;
   text: string;
@@ -103,7 +104,7 @@ export interface Project {
   notes: Note[];
   assets: Asset[];
   templates: PromptTemplate[];
-  view: { page: number; scale: number; rotation: number };
+  view: { page: number; scale: number; rotation: number; direction?: "vertical" | "horizontal" };
 }
 export interface ChatRequest {
   prompt: string;

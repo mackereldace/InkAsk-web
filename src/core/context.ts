@@ -112,16 +112,11 @@ function nearby(project: Project, note: Note): string {
   return page.text.slice(0, CHUNK_SIZE).trim();
 }
 
-function rootSource(note: Note, near: string): Source {
-  const selected = note.anchor.quote.trim();
-  let text = near;
-  if (selected && !text.includes(selected)) {
-    text = text ? `选中原文：${selected}\n\n当前页附近：${text}` : selected;
-  }
+function rootSource(note: Note): Source {
   return {
-    id: "S1",
-    page: note.anchor.page,
-    text: text || selected || "（当前页没有可提取文字）",
+    id: "S1", page: note.anchor.page,
+    rects: note.anchor.rects.map((rect) => [...rect]),
+    text: note.anchor.quote.trim() || "（选中的 PDF 区域，参见提问附图）",
   };
 }
 
@@ -267,11 +262,11 @@ export function buildContext(input: BuildContextInput): ContextResult {
   const budget = Math.max(1, input.budget ?? DEFAULT_BUDGET);
   const coverage = pageCoverage(input.project);
   const near = nearby(input.project, input.note);
-  const fixedSource = rootSource(input.note, near);
-  const candidates = retrieve(input.project, input.note, input.question).slice(
-    0,
-    MAX_RETRIEVED_SOURCES,
-  );
+  const fixedSource = rootSource(input.note);
+  const candidates = [
+    ...(near && near !== input.note.anchor.quote.trim() ? [{ page: input.note.anchor.page, text: near, score: Infinity, order: -1 }] : []),
+    ...retrieve(input.project, input.note, input.question).filter((chunk) => chunk.page !== input.note.anchor.page || chunk.text !== near),
+  ].slice(0, MAX_RETRIEVED_SOURCES);
   const allHistory = currentHistory(input.note);
   const history = allHistory.slice(-MAX_HISTORY_MESSAGES);
   const initialImages = imageOccurrences(input.note, history);

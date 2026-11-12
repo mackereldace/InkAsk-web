@@ -1,0 +1,56 @@
+[
+  {
+    "pages": 500,
+    "notes": 7500,
+    "samples": 5,
+    "targetIndex": 3750,
+    "gcBetweenSamples": true,
+    "oldFullCopyMs": [
+      1.8689,
+      2.1899,
+      1.7896,
+      1.5071,
+      1.5612
+    ],
+    "singleNoteCopyMs": [
+      0.1084,
+      0.1562,
+      0.1168,
+      0.1322,
+      0.1031
+    ],
+    "oldFullCopyMedianMs": 1.7896,
+    "singleNoteCopyMedianMs": 0.1168,
+    "speedup": 15.32,
+    "baseline": "Previous App.update: all notes/messages/draftAssetIds; page array only",
+    "scoped": "copyProjectForEdit(project, midTreeNoteId): one note/messages/assetIds, all page entries shallow copied",
+    "node": "v26.12.0"
+  },
+  {
+    "pages": 2000,
+    "notes": 30000,
+    "samples": 5,
+    "targetIndex": 15000,
+    "gcBetweenSamples": true,
+    "oldFullCopyMs": [
+      10.6482,
+      8.5082,
+      9.4962,
+      8.6004,
+      9.2282
+    ],
+    "singleNoteCopyMs": [
+      1.2211,
+      1.1865,
+      1.0593,
+      1.3322,
+      1.0892
+    ],
+    "oldFullCopyMedianMs": 9.2282,
+    "singleNoteCopyMedianMs": 1.1865,
+    "speedup": 7.78,
+    "baseline": "Previous App.update: all notes/messages/draftAssetIds; page array only",
+    "scoped": "copyProjectForEdit(project, midTreeNoteId): one note/messages/assetIds, all page entries shallow copied",
+    "node": "v26.12.0"
+  }
+]

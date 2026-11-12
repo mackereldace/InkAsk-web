@@ -1,0 +1,60 @@
+{
+  "date": "2026-11-12",
+  "environment": "Local macOS, Chromium IAB; deterministic local mock model, no external AI",
+  "method": "Single UI observations; heap at capture points, not GC-normalized peaks or FPS guarantees",
+  "fixtures": [
+    {
+      "pages": 500,
+      "notes": 7500,
+      "jsonBytes": 41520177,
+      "archiveBytes": 1181286,
+      "firstViewportMs": 449,
+      "firstHeapMiB": 163.22017288208008,
+      "scroll": {
+        "scriptMs": 12.1,
+        "layoutMs": 0.7849999999999993,
+        "heapMB": 52.1733283996582,
+        "dom": {
+          "canvas": 5,
+          "notes": 25,
+          "page": "39",
+          "save": " 已保存在本机"
+        }
+      },
+      "enterAnswerMs": 288
+    },
+    {
+      "pages": 2000,
+      "notes": 30000,
+      "jsonBytes": 166478392,
+      "archiveBytes": 4713231,
+      "firstViewportMs": 1724,
+      "firstHeapMiB": 461.69865798950195,
+      "scroll": {
+        "scriptMs": 13.822000000000001,
+        "layoutMs": 0,
+        "heapMB": 154.78647232055664,
+        "dom": {
+          "canvas": 5,
+          "notes": 25,
+          "page": "20",
+          "save": " 已保存在本机"
+        }
+      },
+      "enterAnswerMs": 316
+    }
+  ],
+  "generationBefore": {
+    "completeWallMs": 1694,
+    "savedWallMs": 2914,
+    "scriptMs": 350.644,
+    "heapMB": 1590.938705444336
+  },
+  "generationAfter": {
+    "completeWallMs": 1164,
+    "savedWallMs": 1533,
+    "scriptMs": 563.256,
+    "heapMB": 442.5588836669922
+  },
+  "reopenAfterMs": 369
+}
