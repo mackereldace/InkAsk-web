@@ -25,6 +25,7 @@ interface Props {
   onFocus: (id: string, messageId?: string) => void;
   onAttach: (id: string, files: File[]) => void;
   onScreenshot: (note: Note) => void;
+  onSourceImage: (note: Note) => void;
   onRetry: (id: string) => void;
 }
 
@@ -32,30 +33,34 @@ export default function AnswerReader(props: Props) {
   const { note, project, onUpdate, onSend, onPage } = props;
   const [preview, setPreview] = useState(false), [edited, setEdited] = useState("");
   const input = useRef<HTMLInputElement>(null), body = useRef<HTMLDivElement>(null), surface = useRef<HTMLDivElement>(null);
-  const [annotationLayout, setAnnotationLayout] = useState<{ width: number; annotations: ReadingAnnotation[] }>({ width: 0, annotations: [] });
+  const [annotationLayout, setAnnotationLayout] = useState<{ width: number; annotations: ReadingAnnotation[]; signature: string }>({ width: 0, annotations: [], signature: "" });
   const answer = answerFor(note, props.messageId);
   const answers = note.messages.filter((m) => m.role === "assistant");
   const question = answer ? note.messages.slice(0, note.messages.indexOf(answer)).reverse().find((m) => m.role === "user") : undefined;
   const children = answer ? project.notes.filter((n) => n.parentId === note.id && n.parentMessageId === answer.id) : [];
   const parentMessage = project.notes.find((n) => n.id === note.parentId)?.messages.find((m) => m.id === note.parentMessageId);
+  const sourceImage = !note.parentId && project.assets.find((asset) => asset.id === note.sourceAssetId);
   const annotationKey = JSON.stringify(children.map((child) => [child.id, child.title, child.branchQuote, child.answerAnchor]));
   useLayoutEffect(() => {
     const root = body.current, wrapper = surface.current;
-    if (!root || !wrapper) { setAnnotationLayout({ width: 0, annotations: [] }); return; }
+    if (!root || !wrapper) { setAnnotationLayout((current) => current.width || current.annotations.length ? { width: 0, annotations: [], signature: "" } : current); return; }
     let alive = true, frame = 0;
     const measure = () => {
       frame = 0;
       if (!alive) return;
-      setAnnotationLayout({ width: wrapper.clientWidth, annotations: children.map((child) => {
+      const annotations = children.map((child) => {
         const range = answerAnchorRange(root, child.answerAnchor, child.branchQuote ?? "");
         return {
           id: child.id, title: child.title,
           rects: range ? answerRangeRects(range, wrapper) : [],
           preview: <><small>{range ? "选文便签" : "已保存便签 · 选文位置已变化"}</small><MathText>{child.branchQuote || child.title}</MathText></>,
         };
-      }) });
+      });
+      const width = wrapper.clientWidth;
+      const signature = JSON.stringify([width, annotationKey, annotations.map((item) => [item.id, item.rects])]);
+      setAnnotationLayout((current) => current.signature === signature ? current : { width, annotations, signature });
     };
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+    const schedule = () => { if (alive && !frame) frame = requestAnimationFrame(measure); };
     measure();
     const observer = new ResizeObserver(schedule);
     observer.observe(root);
@@ -103,7 +108,10 @@ export default function AnswerReader(props: Props) {
     </header>
     <details className="reading-source" open={!answer}>
       <summary>{note.parentId ? "选中的上一层回答" : `选中的 PDF 原文 · 第 ${note.anchor.page} 页`}</summary>
-      <blockquote className="message-body"><Markdown message={{ content: note.branchQuote || note.anchor.quote || "已选择原文区域，可附上截图提问。", sources: parentMessage?.sources }} project={project} onPage={onPage} /></blockquote>
+      {sourceImage && <div className="source-image"><AssetImage asset={sourceImage} /></div>}
+      {sourceImage ? <details className="source-text"><summary>文字摘录</summary><blockquote className="message-body"><Markdown message={{ content: note.branchQuote || note.anchor.quote }} project={project} onPage={onPage} /></blockquote></details> :
+        <blockquote className="message-body"><Markdown message={{ content: note.branchQuote || note.anchor.quote || "已选择原文区域，可附上截图提问。", sources: parentMessage?.sources }} project={project} onPage={onPage} /></blockquote>}
+      {!sourceImage && !note.parentId && <button className="source-capture" onClick={() => props.onSourceImage(note)}><ImagePlus size={14} />查看原文截图</button>}
       {!answer && !note.parentId && <label className="quote-editor">校正选文 / OCR 文字<textarea aria-label="校正选文" value={note.anchor.quote}
         onChange={(e) => onUpdate(note.id, { anchor: { ...note.anchor, quote: e.target.value } })} /></label>}
     </details>
@@ -119,7 +127,7 @@ export default function AnswerReader(props: Props) {
         <Markdown message={answer} project={project} onPage={onPage} />
         {answer.status === "streaming" && !answer.content && <span className="thinking" role="status">正在阅读文档，生成回答…</span>}
       </div>
-      <AnnotationLayer {...annotationLayout} activeId={props.activeId} onFocus={props.onFocus} />
+      <AnnotationLayer width={annotationLayout.width} annotations={annotationLayout.annotations} activeId={props.activeId} onFocus={props.onFocus} />
       </div>
       {answer.error && <p className="inline-error" role="alert">{answer.error}</p>}
       {answer.status === "stopped" && <p className="small muted">已停止，收到的回答已保留。</p>}
@@ -261,7 +269,7 @@ export default function AnswerReader(props: Props) {
                   className="text-button"
                   onClick={() => props.onScreenshot(note)}
                 >
-                  附上原文截图
+                  {note.parentId ? "附上 PDF 原文截图" : "附上原文截图"}
                 </button>
               </div>
               {props.busy ? (

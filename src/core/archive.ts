@@ -301,6 +301,7 @@ function remapProject(project: Project): Project {
       ...(note.answerAnchor ? { answerAnchor: { ...note.answerAnchor,
         end: note.answerAnchor.start + remapText(note.answerAnchor.quote, allIds).length,
         quote: remapText(note.answerAnchor.quote, allIds) } } : {}),
+      ...(note.sourceAssetId ? { sourceAssetId: assetIds.get(note.sourceAssetId) ?? note.sourceAssetId } : {}),
       inheritedHistory: remapHistory(note.inheritedHistory, allIds),
       templateId: templateIds.get(note.templateId) ?? note.templateId,
       draft: remapText(note.draft, allIds),
@@ -400,6 +401,7 @@ function validateReferences(project: Project): void {
   for (const note of project.notes) {
     if (!templateIds.has(note.templateId))
       throw new Error("A note references a missing template.");
+    if (note.sourceAssetId && !assetIds.has(note.sourceAssetId)) throw new Error("A note source image is missing.");
     validateTextReferences(note.draft, assetIds);
     if (note.branchQuote) validateTextReferences(note.branchQuote, assetIds);
     if (note.answerAnchor) validateTextReferences(note.answerAnchor.quote, assetIds);
@@ -488,6 +490,7 @@ function validateManifest(value: unknown): asserts value is Manifest {
       assertRect(rect, `note.anchor.rects[${rectIndex}]`),
     );
     assertString(item.anchor.quote, "note.anchor.quote");
+    if (item.sourceAssetId !== undefined) assertString(item.sourceAssetId, "note.sourceAssetId");
     if (item.answerAnchor !== undefined) {
       assertRecord(item.answerAnchor, "note.answerAnchor");
       const { start, end, quote } = item.answerAnchor;
@@ -618,8 +621,8 @@ function validateManifest(value: unknown): asserts value is Manifest {
     !Number.isInteger(project.view.page) ||
     project.view.page < 1 ||
     project.view.page > project.document.pageCount ||
-    project.view.scale < 0.4 ||
-    project.view.scale > 2 ||
+    project.view.scale < 0.25 ||
+    project.view.scale > 3 ||
     ![0, 90, 180, 270].includes(project.view.rotation)
   )
     throw new Error("Invalid document view.");

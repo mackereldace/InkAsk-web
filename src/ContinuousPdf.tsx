@@ -42,6 +42,7 @@ function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, ...prop
   return (
     <section ref={section} id={`pdf-sheet-${page}`} data-pdf-page={page}
       className="pdf-sheet" aria-label={`PDF 第 ${page} 页`} style={{ width: size.width }}>
+      <div className="pdf-sheet-content" style={{ width: size.width, height: size.height }}>
       {near ? <PdfPage pdf={pdf} page={page} scale={scale} rotation={rotation}
         text={text} notes={notes} regionMode={props.regionMode} activeId={props.activeId}
         onSelect={props.onSelect} onFocus={props.onFocus} onError={props.onError}
@@ -50,6 +51,7 @@ function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, ...prop
           setMeasured({ width, height, scale, rotation });
         }}
       /> : <div className="pdf-page-placeholder" style={{ width: size.width, height: size.height }} aria-label={`第 ${page} 页，滚动到此处显示`} />}
+      </div>
     </section>
   );
 }

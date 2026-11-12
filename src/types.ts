@@ -77,6 +77,7 @@ export interface Note {
   parentMessageId?: string;
   branchQuote?: string;
   answerAnchor?: AnswerAnchor;
+  sourceAssetId?: string;
   inheritedHistory: HistoryMessage[];
   collapsed: boolean;
   task: Task;

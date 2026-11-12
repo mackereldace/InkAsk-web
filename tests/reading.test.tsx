@@ -71,7 +71,7 @@ describe("reading answers as nested documents", () => {
     const html = renderToStaticMarkup(<AnswerReader note={p.notes[0]} project={p} messageId="a1" busy={false} apiReady
       context={(note) => buildContext({ project: p, note, question: "", template: p.templates[0] })}
       onUpdate={noop} onSend={noop} onStop={noop} onSelect={noop} onClearSelection={noop} onBranch={noop} onDelete={noop}
-      onPage={noop} onFocus={noop} onAttach={noop} onScreenshot={noop} onRetry={noop} />);
+      onPage={noop} onFocus={noop} onAttach={noop} onSourceImage={() => {}} onScreenshot={noop} onRetry={noop} />);
     expect(html).toContain('aria-label="回答阅读页"');
     expect(html).toContain('aria-label="AI 回答正文"');
     expect(html).toContain("较早回答中选中的一句话");
@@ -127,7 +127,7 @@ describe("consistent math and annotation surfaces", () => {
     const html = renderToStaticMarkup(<AnswerReader note={p.notes[0]} project={p} busy={false} apiReady
       context={(note) => buildContext({ project: p, note, question: "", template: p.templates[0] })}
       onUpdate={noop} onSend={noop} onStop={noop} onSelect={noop} onClearSelection={noop} onBranch={noop}
-      onDelete={noop} onPage={noop} onFocus={noop} onAttach={noop} onScreenshot={noop} onRetry={noop} />);
+      onDelete={noop} onPage={noop} onFocus={noop} onAttach={noop} onSourceImage={() => {}} onScreenshot={noop} onRetry={noop} />);
     expect((html.match(/class="katex"/g) ?? []).length).toBeGreaterThanOrEqual(3);
     expect(html).not.toContain("katex-error");
   });

@@ -2523,3 +2523,30 @@ button:hover {
   .answer-document .composer-footer > div { flex-wrap: wrap; }
   .selection-actions > button { font-size: 10px; }
 }
+
+/* Give the document the available height. */
+.topbar { height: 48px; min-height: 48px; padding: 0 24px; }
+.breadcrumb button { padding: 4px 0; color: #758471; }
+.workspace-name { text-align: left; }
+.reader-toolbar { min-height: 44px; padding-top: 5px; padding-bottom: 5px; }
+.app-footer { min-height: 25px; padding-top: 5px; padding-bottom: 5px; }
+.api-hint { padding-top: 7px; padding-bottom: 7px; }
+.folder-location { width: 100%; }
+.folder-location span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-location.active { background: #e0e6d8; color: #35563c; }
+.answer-navigation .zoom-controls { margin-left: auto; flex-shrink: 0; }
+.answer-body { font-size: calc(16px * var(--answer-scale, 1)); }
+.answer-body h1 { font-size: 1.8em; }
+.answer-body h2 { font-size: 1.45em; }
+.answer-body h3 { font-size: 1.18em; }
+.answer-body pre, .answer-body table { font-size: .87em; }
+.message-body .asset-thumb, .source-image .asset-thumb { display: inline-flex; max-width: 100%; width: auto; }
+.message-body .asset-thumb img { width: auto; max-width: 100%; max-height: 420px; object-fit: contain; }
+.source-image .asset-thumb img { width: auto; max-width: 100%; max-height: 260px; object-fit: contain; }
+.source-image { margin: 12px 0; }
+.source-text { font-size: 12px; }
+.source-capture { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--green); padding: 7px 0; }
+@media (max-width: 700px) {
+  .topbar { padding: 0 14px; }
+  .answer-navigation .zoom-controls { margin-left: 0; }
+}

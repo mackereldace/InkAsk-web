@@ -346,6 +346,7 @@ describe("project archive", () => {
     };
     const root = note({
       id: "note-old",
+      sourceAssetId: "asset-old",
       draftAssetIds: ["asset-old"],
       messages: [
         message("question-old", "user", "看图 ![figure](asset:asset-old)"),
@@ -385,6 +386,7 @@ describe("project archive", () => {
     expect(imported.document.id).not.toBe(project.document.id);
     expect(imported.notes.map((item) => item.id)).not.toContain("note-old");
     expect(imported.assets[0].id).not.toBe("asset-old");
+    expect(imported.notes[0].sourceAssetId).toBe(imported.assets[0].id);
     expect(await imported.document.pdf.text()).toBe("%PDF-1.7 fixture");
     expect(
       Array.from(new Uint8Array(await imported.assets[0].data.arrayBuffer())),
@@ -405,6 +407,14 @@ describe("project archive", () => {
     ).toContain(imported.assets[0].id);
     expect(exportMarkdown(imported)).toContain("第 1 页");
     expect(exportMarkdown(imported)).toContain("[S1]");
+  });
+
+  it("preserves the full reader zoom range in exported backups", async () => {
+    for (const scale of [0.25, 3]) {
+      const project = archiveFixture();
+      project.view.scale = scale;
+      expect((await importProject(await exportProject(project))).view.scale).toBe(scale);
+    }
   });
 
   it("rejects prototype keys, missing assets, and invalid ZIP data", async () => {

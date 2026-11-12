@@ -7,10 +7,8 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  FilePlus2,
   FileText,
   FolderOpen,
-  GitBranch,
   HelpCircle,
   Highlighter,
   Loader2,
@@ -24,7 +22,6 @@ import {
   Settings2,
   Sparkles,
   X,
-  ZoomIn,
 } from "lucide-react";
 import {
   openPdf,
@@ -34,6 +31,9 @@ import {
 } from "./pdf";
 import ContinuousPdf from "./ContinuousPdf";
 import AnswerReader from "./AnswerReader";
+import Library from "./Library";
+import "./library.css";
+import { folderLabel, libraryDocuments } from "./core/library";
 import { MathText } from "./Markdown";
 import ApiSettings from "./ApiSettings";
 import { cancelOcr, recognizePage } from "./ocr";
@@ -47,6 +47,8 @@ import {
   loadProject,
   listDocuments,
   deleteProject,
+  listFolders, listDocumentFolders, createFolder, renameFolder, deleteFolder, moveDocument,
+  type WorkspaceFolder,
 } from "./core/storage";
 import { exportProject, importProject, exportMarkdown } from "./core/archive";
 import type {
@@ -79,9 +81,15 @@ export default function App() {
   const [project, setProject] = useState<Project>(),
     [pdf, setPdf] = useState<PDFDocumentProxy>(),
     [documents, setDocuments] = useState<InkDocument[]>([]),
+    [folders, setFolders] = useState<WorkspaceFolder[]>([]),
+    [documentFolders, setDocumentFolders] = useState<Record<string, string>>({}),
+    [currentFolder, setCurrentFolder] = useState<string>(),
+    [libraryVisible, setLibraryVisible] = useState(true),
+    [answerScale, setAnswerScale] = useState(1),
     [status, setStatus] = useState(DEFAULT_STATUS),
     [notice, setNotice] = useState(""),
     [loading, setLoading] = useState(false),
+    [switching, setSwitching] = useState(false),
     [saved, setSaved] = useState("已保存在本机"),
     [saveFailed, setSaveFailed] = useState(false);
   const [selection, setSelection] = useState<Anchor>(),
@@ -110,6 +118,10 @@ export default function App() {
     fileInput = useRef<HTMLInputElement>(null),
     importInput = useRef<HTMLInputElement>(null),
     openEpoch = useRef(0),
+    openRequest = useRef(0),
+    switchLocks = useRef(new Set<number>()),
+    captures = useRef(new Map<string, Promise<Asset | undefined>>()),
+    pendingZoom = useRef<{ top: number; left: number; x: number; y: number; ratio: number } | undefined>(undefined),
     ocrEpoch = useRef(0),
     pdfOwned = useRef(new Set<PDFDocumentProxy>()),
     reader = useRef<HTMLDivElement>(null),
@@ -121,7 +133,7 @@ export default function App() {
     const note = projectRef.current?.notes.find((n) => n.id === target?.noteId);
     return note ? `${note.id}:${answerFor(note, target?.messageId)?.id ?? "draft"}` : "pdf";
   }
-  function navigate(target?: ReadingTarget, page?: number) {
+  function rememberPosition() {
     const root = reader.current;
     if (root) {
       const bounds = root.getBoundingClientRect();
@@ -132,6 +144,10 @@ export default function App() {
         ...(sheet ? { page: Number(sheet.dataset.pdfPage), pageOffset: bounds.top - sheet.getBoundingClientRect().top } : {}),
       });
     }
+  }
+  function navigate(target?: ReadingTarget, page?: number) {
+    rememberPosition();
+    setLibraryVisible(false);
     readingView.current = target;
     pendingNavigation.current = { key: viewKey(target), page };
     setFocusId(target?.noteId);
@@ -240,8 +256,7 @@ export default function App() {
       .then((r) => r.json())
       .then(setStatus)
       .catch(() => setNotice("本地 API 服务未连接，阅读与 OCR 仍可使用。"));
-    void listDocuments()
-      .then(setDocuments)
+    void refresh()
       .catch((e) => setNotice("无法读取本地资料库：" + err(e)));
     return () => {
       for (const c of controllers.current.values()) c.abort();
@@ -258,134 +273,119 @@ export default function App() {
     return () => window.removeEventListener("keydown", shortcut);
   }, []);
   async function refresh() {
-    setDocuments(await listDocuments());
+    const [docs, dirs, membership] = await Promise.all([listDocuments(), listFolders(), listDocumentFolders()]);
+    setDocuments(docs); setFolders(dirs); setDocumentFolders(membership);
   }
-  async function openExisting(id: string) {
-    if (projectRef.current?.document.id === id) { navigate(); return; }
+  function showLibrary(folderId?: string) {
+    rememberPosition();
+    openRequest.current++;
+    setLoading(false); setLibraryVisible(true); setCurrentFolder(folderId);
+    setSelection(undefined); setAnswerSelection(undefined); setRegion(false); setSearch("");
+  }
+  async function openExisting(id: string, request = ++openRequest.current) {
+    if (projectRef.current?.document.id === id) {
+      setLoading(false); setCurrentFolder(documentFolders[id]); navigate(); return;
+    }
+    setLoading(true);
     try {
-      await persist();
       const p = await loadProject(id);
-      if (p) await activate(p);
+      if (request !== openRequest.current) return;
+      if (p && await activate(p, request)) setCurrentFolder(documentFolders[id]);
     } catch (e) {
-      setNotice(err(e));
-    }
-  }
-  async function activate(p: Project) {
-    const epoch = ++openEpoch.current;
-    setLoading(true);
-    setSelection(undefined);
-    setFocusId(undefined);
-    setReadingMessageId(undefined);
-    setAnswerSelection(undefined);
-    setActiveId(undefined);
-    readingView.current = undefined;
-    positions.current.clear();
-    pdfPageSizes.current.clear();
-    pendingNavigation.current = { key: "pdf", page: p.view.page };
-    ocrEpoch.current++;
-    void cancelOcr();
-    setOcr(null);
-    for (const c of controllers.current.values()) c.abort();
-    controllers.current.clear();
-    setBusyIds(new Set());
-    try {
-      await persist().catch(() => {
-        throw new Error("当前项目尚未保存，请先导出备份。");
-      });
-      const d = await openPdf(p.document.pdf);
-      if (epoch !== openEpoch.current) {
-        await d.destroy();
-        return;
-      }
-      const previous = pdfRef.current;
-      pdfOwned.current.add(d);
-      pdfRef.current = d;
-      setPdf(d);
-      p.document.pageCount = d.numPages;
-      projectRef.current = p;
-      revision.current++;
-      setProject(p);
-      setSaved("正在保存…");
-      if (previous) {
-        pdfOwned.current.delete(previous);
-        void previous.destroy();
-      }
-      for (let page = 1; page <= d.numPages; page++) {
-        if (epoch !== openEpoch.current) break;
-        const cached = projectRef.current?.pages.find((p) => p.page === page);
-        if (cached && cached.status !== "pending" && cached.status !== "error")
-          continue;
-        try {
-          const text = await extractPage(d, page);
-          if (epoch === openEpoch.current)
-            update((p) => {
-              if (p.pages.some((x) => x.page === page && x.source === "ocr"))
-                return;
-              p.pages = p.pages.filter((x) => x.page !== page);
-              p.pages.push(text);
-            });
-        } catch {
-          if (epoch === openEpoch.current)
-            update((p) => {
-              const x = p.pages.find((x) => x.page === page);
-              if (x) x.status = "error";
-            });
-        }
-        if (page === 1) setLoading(false);
-      }
-    } catch (e) {
-      setNotice("打开失败：" + err(e));
+      if (request === openRequest.current) setNotice("打开失败：" + err(e));
     } finally {
-      if (epoch === openEpoch.current) setLoading(false);
+      if (request === openRequest.current) setLoading(false);
     }
   }
-  async function openFile(file: File) {
+  async function extractTextPages(d: PDFDocumentProxy, documentId: string, epoch: number) {
+    for (let page = 1; page <= d.numPages; page++) {
+      if (epoch !== openEpoch.current || projectRef.current?.document.id !== documentId) return;
+      const cached = projectRef.current.pages.find((p) => p.page === page);
+      if (cached && cached.status !== "pending" && cached.status !== "error") continue;
+      try {
+        const text = await extractPage(d, page);
+        if (epoch === openEpoch.current && projectRef.current?.document.id === documentId)
+          update((p) => {
+            if (p.pages.some((x) => x.page === page && x.source === "ocr")) return;
+            p.pages = p.pages.filter((x) => x.page !== page); p.pages.push(text);
+          });
+      } catch {
+        if (epoch === openEpoch.current && projectRef.current?.document.id === documentId)
+          update((p) => {
+            const x = p.pages.find((x) => x.page === page);
+            if (x) x.status = "error";
+            else p.pages.push({ page, text: "", words: [], source: "native", status: "error", width: 600, height: 800 });
+          });
+      }
+    }
+  }
+  async function activate(p: Project, request: number): Promise<boolean> {
+    const d = await openPdf(p.document.pdf);
+    if (request !== openRequest.current) { await d.destroy(); return false; }
+    let committed = false;
+    switchLocks.current.add(request); setSwitching(true);
+    try {
+      // Stop writers before taking the final source snapshot.
+      const epoch = ++openEpoch.current;
+      ocrEpoch.current++; void cancelOcr(); setOcr(null);
+      for (const c of controllers.current.values()) c.abort();
+      controllers.current.clear(); setBusyIds(new Set());
+      if (projectRef.current?.notes.some((note) => note.messages.some((message) => message.status === "streaming")))
+        update((source) => source.notes.forEach((note) => note.messages.forEach((message) => {
+          if (message.status === "streaming") message.status = "stopped";
+        })));
+      do { await persist(); } while (request === openRequest.current && savedRevision.current !== revision.current);
+      if (request !== openRequest.current) return false;
+      const previous = pdfRef.current;
+      pdfOwned.current.add(d); pdfRef.current = d; setPdf(d);
+      p.document.pageCount = d.numPages;
+      projectRef.current = p; revision.current++; setProject(p); setSaved("正在保存…");
+      setSelection(undefined); setFocusId(undefined); setReadingMessageId(undefined);
+      setAnswerSelection(undefined); setActiveId(undefined); setRegion(false);
+      readingView.current = undefined; positions.current.clear(); pdfPageSizes.current.clear();
+      pendingNavigation.current = { key: "pdf", page: p.view.page };
+      setLibraryVisible(false); setNavigation((value) => value + 1);
+      committed = true;
+      if (previous) { pdfOwned.current.delete(previous); void previous.destroy(); }
+      void extractTextPages(d, p.document.id, epoch);
+      return true;
+    } finally {
+      switchLocks.current.delete(request); setSwitching(switchLocks.current.size > 0);
+      if (!committed) {
+        await d.destroy();
+        const source = projectRef.current, sourcePdf = pdfRef.current;
+        if (source && sourcePdf) void extractTextPages(sourcePdf, source.document.id, openEpoch.current);
+      }
+    }
+  }
+  async function openFile(file: File, request = ++openRequest.current, destination = currentFolder) {
     if (file.size > 100 * 1024 * 1024) {
-      setNotice("首版支持 100 MB 以内的 PDF，请拆分后导入。");
-      return;
+      setNotice("首版支持 100 MB 以内的 PDF，请拆分后导入。"); return;
     }
     setLoading(true);
     try {
-      const first = new TextDecoder().decode(
-        await file.slice(0, 1024).arrayBuffer(),
-      );
+      const first = new TextDecoder().decode(await file.slice(0, 1024).arrayBuffer());
       if (!first.includes("%PDF-")) throw new Error("请选择有效的 PDF 文件");
-      const hash = await crypto.subtle.digest(
-        "SHA-256",
-        await file.arrayBuffer(),
-      );
-      const fingerprint = Array.from(new Uint8Array(hash))
-        .map((x) => x.toString(16).padStart(2, "0"))
-        .join("");
+      const hash = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+      if (request !== openRequest.current) return;
+      const fingerprint = Array.from(new Uint8Array(hash)).map((x) => x.toString(16).padStart(2, "0")).join("");
       const existing = documents.find((d) => d.fingerprint === fingerprint);
-      if (existing) {
-        await openExisting(existing.id);
-        return;
-      }
+      if (existing) { await openExisting(existing.id, request); return; }
       const p: Project = {
         version: 1,
-        document: {
-          id: uid(),
-          name: file.name,
-          fingerprint,
-          pdf: file,
-          pageCount: 0,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        },
-        pages: [],
-        notes: [],
-        assets: [],
-        templates: structuredClone(DEFAULT_TEMPLATES),
+        document: { id: uid(), name: file.name, fingerprint, pdf: file, pageCount: 0, createdAt: Date.now(), updatedAt: Date.now() },
+        pages: [], notes: [], assets: [], templates: structuredClone(DEFAULT_TEMPLATES),
         view: { page: 1, scale: 0.95, rotation: 0 },
       };
-      await activate(p);
-      await persist();
-      await refresh();
+      if (await activate(p, request)) {
+        await persist();
+        if (destination) await moveDocument(p.document.id, destination);
+        await refresh();
+      }
     } catch (e) {
-      setNotice(err(e));
+      if (request === openRequest.current) setNotice(err(e));
     } finally {
-      setLoading(false);
+      if (request === openRequest.current) setLoading(false);
     }
   }
   function pageTo(page: number) {
@@ -443,43 +443,38 @@ export default function App() {
       });
     }
   }
-  async function screenshot(note: Note) {
-    const d = pdfRef.current,
-      documentId = projectRef.current?.document.id;
-    if (!d) return;
-    try {
-      const rect = note.anchor.rects.reduce(
-        (a, b) =>
-          [
-            Math.min(a[0], b[0]),
-            Math.min(a[1], b[1]),
-            Math.max(a[2], b[2]),
-            Math.max(a[3], b[3]),
-          ] as Anchor["rects"][0],
-      );
-      const { blob } = await renderImage(
-        await d.getPage(note.anchor.page),
-        rect,
-        projectRef.current?.view.rotation ?? 0,
-      );
-      if (projectRef.current?.document.id !== documentId) return;
-      const asset: Asset = {
-        id: uid(),
-        name: `第 ${note.anchor.page} 页选区.png`,
-        mime: "image/png",
-        data: blob,
-        source: { page: note.anchor.page, rect },
-      };
-      update((p) => {
-        const n = p.notes.find((n) => n.id === note.id);
-        if (n && n.draftAssetIds.length < 4) {
-          p.assets.push(asset);
-          n.draftAssetIds.push(asset.id);
-        }
-      });
-    } catch (e) {
-      setNotice("截图失败：" + err(e));
+  async function screenshot(note: Note, attachToQuestion = true) {
+    const p = projectRef.current, d = pdfRef.current;
+    if (switchLocks.current.size || !p || !d || !note.anchor.rects.length) return;
+    const documentId = p.document.id, epoch = openEpoch.current;
+    const existing = p.assets.find((asset) => asset.id === p.notes.find((n) => n.id === note.id)?.sourceAssetId);
+    let pending = captures.current.get(note.id);
+    if (!existing && !pending) {
+      pending = (async () => {
+        const rect = note.anchor.rects.reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] as Anchor["rects"][0]);
+        const { blob } = await renderImage(await d.getPage(note.anchor.page), rect, p.view.rotation);
+        if (projectRef.current?.document.id !== documentId || epoch !== openEpoch.current) return;
+        const asset: Asset = { id: uid(), name: `第 ${note.anchor.page} 页选区.png`, mime: "image/png", data: blob, source: { page: note.anchor.page, rect } };
+        update((project) => {
+          const n = project.notes.find((n) => n.id === note.id);
+          if (n) { project.assets.push(asset); n.sourceAssetId = asset.id; }
+        });
+        return asset;
+      })();
+      captures.current.set(note.id, pending);
+      void pending.finally(() => captures.current.delete(note.id)).catch(() => {});
     }
+    try {
+      const asset = existing ?? await pending;
+      if (asset && attachToQuestion && projectRef.current?.document.id === documentId)
+        update((project) => {
+          const n = project.notes.find((n) => n.id === note.id);
+          if (n && !n.draftAssetIds.includes(asset.id)) {
+            if (n.draftAssetIds.length < 4) n.draftAssetIds.push(asset.id);
+            else setNotice("每次提问最多附加 4 张图片。");
+          }
+        });
+    } catch (e) { setNotice("截图失败：" + err(e)); }
   }
   async function makeNote(task: Task, withScreenshot = false) {
     const p = projectRef.current;
@@ -507,7 +502,7 @@ export default function App() {
     };
     update((p) => p.notes.push(n));
     focus(n.id);
-    if (withScreenshot || !n.anchor.quote) await screenshot(n);
+    await screenshot(n, withScreenshot || !n.anchor.quote);
   }
   function context(n: Note) {
     const p = projectRef.current!;
@@ -523,7 +518,7 @@ export default function App() {
   async function send(id: string, promptOverride?: string, retry = false) {
     const p = projectRef.current,
       n = p?.notes.find((n) => n.id === id);
-    if (!p || !n || controllers.current.has(id)) return;
+    if (switchLocks.current.size || !p || !n || controllers.current.has(id)) return;
     const documentId = p.document.id;
     const lastUser = [...n.messages].reverse().find((m) => m.role === "user");
     const template =
@@ -583,7 +578,7 @@ export default function App() {
       note.draftAssetIds = [];
     });
     const patch = (fn: (m: Message) => void) => {
-      if (projectRef.current?.document.id !== documentId) return;
+      if (projectRef.current?.document.id !== documentId || controllers.current.get(id) !== control) return;
       update((p) => {
         const m = p.notes
           .find((n) => n.id === id)
@@ -625,9 +620,11 @@ export default function App() {
         if (!control.signal.aborted) m.error = err(e);
       });
     } finally {
-      controllers.current.delete(id);
-      setBusyIds(new Set(controllers.current.keys()));
-      void persist().catch(() => {});
+      if (controllers.current.get(id) === control) {
+        controllers.current.delete(id);
+        setBusyIds(new Set(controllers.current.keys()));
+        void persist().catch(() => {});
+      }
     }
   }
   function branch(parent: Note, message: Message, quote?: string, task: Task = "custom", answerAnchor?: AnswerAnchor) {
@@ -640,7 +637,7 @@ export default function App() {
   async function recognize(rect?: Anchor["rects"][0], selectedPage?: number) {
     const d = pdfRef.current,
       p = projectRef.current;
-    if (!d || !p || ocr !== null) return;
+    if (switchLocks.current.size || !d || !p || ocr !== null) return;
     const page = selectedPage ?? p.view.page,
       docId = p.document.id,
       epoch = ++ocrEpoch.current;
@@ -703,18 +700,32 @@ export default function App() {
     await cancelOcr();
   }
   async function importFile(file: File) {
+    const request = ++openRequest.current, destination = currentFolder;
     setLoading(true);
     try {
       const p = await importProject(file);
-      await activate(p);
-      await persist();
-      await refresh();
-      setNotice("项目已导入为独立副本。");
+      if (request !== openRequest.current) return;
+      if (await activate(p, request)) {
+        await persist();
+        if (destination) await moveDocument(p.document.id, destination);
+        await refresh();
+        if (request === openRequest.current) setNotice("项目已导入为独立副本。");
+      }
     } catch (e) {
-      setNotice("导入失败：" + err(e));
-    } finally {
-      setLoading(false);
-    }
+      if (request === openRequest.current) setNotice("导入失败：" + err(e));
+    } finally { if (request === openRequest.current) setLoading(false); }
+  }
+  async function openSample() {
+    const request = ++openRequest.current, destination = currentFolder;
+    setLoading(true);
+    try {
+      const response = await fetch("/sample.pdf");
+      if (!response.ok) throw new Error("示例资料加载失败");
+      const blob = await response.blob();
+      if (request !== openRequest.current) return;
+      await openFile(new File([blob], "理解导数 · InkAsk 示例.pdf", { type: "application/pdf" }), request, destination);
+    } catch (e) { if (request === openRequest.current) setNotice(err(e)); }
+    finally { if (request === openRequest.current) setLoading(false); }
   }
   async function exportZip() {
     const p = projectRef.current;
@@ -729,14 +740,44 @@ export default function App() {
       setNotice("导出失败：" + err(e));
     }
   }
+  const answerScaleRef = useRef(answerScale);
+  answerScaleRef.current = answerScale;
+  useEffect(() => {
+    const root = reader.current;
+    if (!root || libraryVisible) return;
+    const wheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const p = projectRef.current;
+      if (!p) return;
+      const old = readingView.current ? answerScaleRef.current : p.view.scale;
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? root.clientHeight : 1);
+      const next = Math.min(3, Math.max(readingView.current ? 0.5 : 0.25, old * Math.exp(-delta * 0.002)));
+      if (next === old) return;
+      const bounds = root.getBoundingClientRect();
+      pendingZoom.current = { top: root.scrollTop, left: root.scrollLeft, x: event.clientX - bounds.left, y: event.clientY - bounds.top, ratio: next / old };
+      if (readingView.current) { answerScaleRef.current = next; setAnswerScale(next); }
+      else update((p) => { p.view.scale = next; });
+      setSelection(undefined); setAnswerSelection(undefined);
+    };
+    root.addEventListener("wheel", wheel, { passive: false });
+    return () => root.removeEventListener("wheel", wheel);
+  }, [libraryVisible, project?.document.id, focusId, update]);
+  useLayoutEffect(() => {
+    const root = reader.current, zoom = pendingZoom.current;
+    if (!root || !zoom) return;
+    pendingZoom.current = undefined;
+    root.scrollTop = (zoom.top + zoom.y) * zoom.ratio - zoom.y;
+    root.scrollLeft = (zoom.left + zoom.x) * zoom.ratio - zoom.x;
+  }, [project?.view.scale, answerScale]);
   const page = project?.view.page ?? 1,
     currentText = project?.pages.find((p) => p.page === page),
     roots =
       project?.notes.filter((n) => !n.parentId && n.anchor.page === page) ?? [],
     focused = project?.notes.find((n) => n.id === focusId);
   const parents = readingTrail(project?.notes ?? [], focusId);
-  const totalNotes = project?.notes.length ?? 0,
-    donePages = project?.pages.filter((p) => p.status === "ready").length ?? 0;
+  const canOcr = !!currentText && currentText.status !== "pending" && (currentText.source === "ocr" || !currentText.text.trim());
+  const sidebarDocuments = libraryDocuments(documents, documentFolders, currentFolder, search);
   return (
     <div
       className="app-shell"
@@ -777,7 +818,7 @@ export default function App() {
           href="#"
           onClick={(e) => {
             e.preventDefault();
-            navigate();
+            showLibrary();
           }}
         >
           <span className="brand-icon">
@@ -786,13 +827,13 @@ export default function App() {
           <strong>inkask</strong>
           <span className="beta">BETA</span>
         </a>
-        <div className="workspace-name">
+        <button className="workspace-name" onClick={() => showLibrary()}>
           <span className="workspace-avatar">我</span>
           <div>
             我的阅读空间<small>LOCAL WORKSPACE</small>
           </div>
           <ChevronDown size={14} />
-        </div>
+        </button>
         <button
           className="primary open-pdf"
           onClick={() => fileInput.current?.click()}
@@ -813,9 +854,9 @@ export default function App() {
           />
         </div>
         <nav className="document-list">
-          {documents
-            .filter((d) => d.name.toLowerCase().includes(search.toLowerCase()))
-            .map((d) => (
+          <button className="sidebar-action folder-location" onClick={() => showLibrary()}><FolderOpen size={15} />阅读空间</button>
+          {folders.filter((folder) => !folder.parentId || folder.id === currentFolder || folder.parentId === currentFolder).map((folder) => <button key={folder.id} className={"sidebar-action folder-location " + (currentFolder === folder.id ? "active" : "")} title={folderLabel(folders, folder.id)} onClick={() => showLibrary(folder.id)}><FolderOpen size={15} /><span>{folder.name}</span></button>)}
+          {sidebarDocuments.map((d) => (
               <div
                 className={
                   "document-row " +
@@ -823,7 +864,7 @@ export default function App() {
                 }
                 key={d.id}
               >
-                <button onClick={() => void openExisting(d.id)}>
+                <button aria-label={d.name} title={d.name} onClick={() => void openExisting(d.id)}>
                   <FileText size={16} />
                   <span>{d.name}</span>
                 </button>
@@ -881,8 +922,8 @@ export default function App() {
         <header className="topbar">
           <div className="breadcrumb">
             <BookOpen size={16} />
-            <span>阅读空间</span>
-            {project && (
+            <button onClick={() => showLibrary()}>阅读空间</button>
+            {project && !libraryVisible && (
               <>
                 <ChevronRight size={13} />
                 <strong>{project.document.name}</strong>
@@ -951,84 +992,16 @@ export default function App() {
             </button>
           </div>
         )}
-        {!project ? (
-          <div className="welcome">
-            <div className="eyebrow">
-              <span /> A LITTLE SPACE FOR BIG IDEAS
-            </div>
-            <h1>
-              读到这里，
-              <br />
-              让思考<span>展开。</span>
-            </h1>
-            <p>把问题留在原文旁，让每一次追问都有迹可循。</p>
-            <button
-              className="upload-zone"
-              onClick={() => fileInput.current?.click()}
-            >
-              <span className="upload-icon">
-                <FilePlus2 size={30} />
-                <span>+</span>
-              </span>
-              <strong>打开一份 PDF，开始阅读</strong>
-              <span>拖放文件到这里，或点击选择</span>
-              <small>文字与扫描文档 · PDF，最大 100 MB</small>
-              <span className="upload-cta">
-                选择 PDF <ArrowUpRight size={15} />
-              </span>
-            </button>
-            <button
-              className="sample-button"
-              onClick={() =>
-                void fetch("/sample.pdf")
-                  .then((r) => {
-                    if (!r.ok) throw new Error("示例资料加载失败");
-                    return r.blob();
-                  })
-                  .then((b) =>
-                    openFile(
-                      new File([b], "理解导数 · InkAsk 示例.pdf", {
-                        type: "application/pdf",
-                      }),
-                    ),
-                  )
-                  .catch((e) => setNotice(err(e)))
-              }
-            >
-              先打开示例资料 <ArrowUpRight size={12} />
-            </button>
-            <div className="welcome-features">
-              <div>
-                <Highlighter size={18} />
-                <strong>选中，即可提问</strong>
-                <span>原文就是问题的起点</span>
-              </div>
-              <div>
-                <MessageSquarePlus size={18} />
-                <strong>便签，承载思考</strong>
-                <span>回答留在你需要的位置</span>
-              </div>
-              <div>
-                <GitBranch size={18} />
-                <strong>追问，自由分支</strong>
-                <span>沿着好奇心继续探索</span>
-              </div>
-            </div>
-            <div className="welcome-foot">
-              <span className="status-dot" />
-              本地保存 · 无需账号 <span>AI 回答需配置模型 API</span>
-            </div>
-          </div>
+        {libraryVisible || !project ? (
+          <Library key={currentFolder ?? "root"} documents={documents} folders={folders} membership={documentFolders} folderId={currentFolder}
+            search={search} onSearch={setSearch} onFolder={showLibrary} onOpen={(id) => void openExisting(id)}
+            onAddPdf={() => fileInput.current?.click()} onImport={() => importInput.current?.click()} onSample={() => void openSample()}
+            onCreate={async (name) => { await createFolder(name, currentFolder); await refresh(); }}
+            onRename={async (id, name) => { await renameFolder(id, name); await refresh(); }}
+            onDeleteFolder={async (id) => { await deleteFolder(id); await refresh(); }}
+            onMove={async (id, folderId) => { await moveDocument(id, folderId); await refresh(); }} />
         ) : (
           <>
-            <div className="document-heading">
-              <div>
-                <span className="eyebrow">{focused ? `READING CHAIN · 第 ${parents.length} 层` : "READ · ASK · UNDERSTAND"}</span>
-                <h1>{focused ? <MathText>{focused.title}</MathText> : project.document.name.replace(/\.pdf$/i, "")}</h1>
-                <p>{focused ? "阅读回答，选中文字继续提问" : <>{project.document.pageCount} 页 <span>·</span> {totalNotes} 个思考便签 <span>·</span> 已提取 {donePages} 页文字</>}</p>
-              </div>
-              <span className="document-tag"><span />{focused ? "回答阅读" : "连续阅读"}</span>
-            </div>
             {focused ? <div className="reader-toolbar answer-navigation">
               <button className="back-reading" onClick={back}><ChevronLeft size={17} />返回上一层</button>
               <nav aria-label="阅读层级" className="reading-trail">
@@ -1038,6 +1011,7 @@ export default function App() {
                     onClick={() => focus(note.id, parents[index + 1]?.parentMessageId)} title={note.title}><MathText>{note.title}</MathText></button>
                 </span>)}
               </nav>
+              <div className="zoom-controls"><button className="icon-button" aria-label="缩小回答" onClick={() => setAnswerScale((value) => Math.max(0.5, value - 0.1))}><Minus size={15} /></button><span>{Math.round(answerScale * 100)}%</span><button className="icon-button" aria-label="放大回答" onClick={() => setAnswerScale((value) => Math.min(3, value + 0.1))}><Plus size={15} /></button></div>
             </div> : <div className="reader-toolbar">
               <div className="page-controls">
                 <button className="icon-button" aria-label="上一页" disabled={page <= 1} onClick={() => pageTo(page - 1)}><ChevronLeft size={17} /></button>
@@ -1048,9 +1022,9 @@ export default function App() {
               </div>
               <div className="toolbar-divider" />
               <div className="zoom-controls">
-                <button className="icon-button" aria-label="缩小" onClick={() => update((p) => { p.view.scale = Math.max(0.4, p.view.scale - 0.1); })}><Minus size={15} /></button>
+                <button className="icon-button" aria-label="缩小" onClick={() => update((p) => { p.view.scale = Math.max(0.25, p.view.scale - 0.1); })}><Minus size={15} /></button>
                 <span>{Math.round(project.view.scale * 100)}%</span>
-                <button className="icon-button" aria-label="放大" onClick={() => update((p) => { p.view.scale = Math.min(2, p.view.scale + 0.1); })}><Plus size={15} /></button>
+                <button className="icon-button" aria-label="放大" onClick={() => update((p) => { p.view.scale = Math.min(3, p.view.scale + 0.1); })}><Plus size={15} /></button>
                 <button className="icon-button" aria-label="旋转页面" onClick={() => update((p) => { p.view.rotation = (p.view.rotation + 90) % 360; })}><RotateCw size={15} /></button>
                 <button className="icon-button" aria-label="适合宽度" onClick={() => update((p) => {
                   const text = pdfPageSizes.current.get(p.view.page) ?? p.pages.find((item) => item.page === p.view.page);
@@ -1062,21 +1036,21 @@ export default function App() {
               <button className={"tool-button " + (region ? "selected" : "")} onClick={() => { setRegion(!region); setSelection(undefined); }}>
                 <Highlighter size={15} />{region ? "正在框选" : "框选区域"}
               </button>
-              {ocr !== null ? <button className="tool-button" onClick={() => void stopOcr()}><Loader2 size={14} className="spin" />{Math.round(ocr * 100)}% · 取消</button> :
-                <button className="tool-button" onClick={() => void recognize()}><ScanText size={15} />{currentText?.source === "ocr" ? "重新识别" : "识别本页"}</button>}
+              {ocr !== null ? <button className="tool-button" onClick={() => void stopOcr()}><Loader2 size={14} className="spin" />{Math.round(ocr * 100)}% · 取消</button> : canOcr &&
+                <button className="tool-button" disabled={switching} onClick={() => void recognize()}><ScanText size={15} />{currentText?.source === "ocr" ? "重新识别" : "识别本页"}</button>}
               <span className="toolbar-divider" /><span className="notes-count"><MessageSquarePlus size={14} /> {roots.length}</span>
             </div>}
             {!status.configured && <div className="api-hint"><Sparkles size={14} />
               <span>阅读已就绪。配置模型 API 后，即可在便签中获得 AI 回答。</span>
               <button onClick={() => setSettings(true)}>如何配置<ArrowUpRight size={12} /></button>
             </div>}
-            <div ref={reader} className={"reader-area " + (focused ? "answer-reader-area" : "pdf-reader-area")}>
+            <div ref={reader} className={"reader-area " + (focused ? "answer-reader-area" : "pdf-reader-area")} style={{ "--answer-scale": answerScale } as React.CSSProperties}>
               {focused ? <AnswerReader key={`${focused.id}:${readingMessageId ?? "latest"}`} note={focused} messageId={readingMessageId} activeId={activeId} project={project}
-                busy={busyIds.has(focused.id)} apiReady={status.configured} context={context}
+                busy={busyIds.has(focused.id)} apiReady={status.configured && !switching} context={context}
                 onUpdate={(id, change) => update((p) => { const note = p.notes.find((n) => n.id === id); if (note) Object.assign(note, change); })}
                 onSend={(id, prompt) => void send(id, prompt)} onStop={(id) => controllers.current.get(id)?.abort()}
                 onRetry={(id) => void send(id, undefined, true)} onBranch={(note, message, anchor) => branch(note, message, anchor?.quote, "custom", anchor)} onDelete={removeNote}
-                onPage={pageTo} onFocus={focus} onAttach={(id, files) => void attach(id, files)} onScreenshot={(note) => void screenshot(note)}
+                onPage={pageTo} onFocus={focus} onAttach={(id, files) => void attach(id, files)} onScreenshot={(note) => void screenshot(note)} onSourceImage={(note) => void screenshot(note, false)}
                 onSelect={(note, message, anchor) => { setSelection(undefined); setAnswerSelection({ noteId: note.id, messageId: message.id, quote: anchor.quote, anchor }); }} onClearSelection={() => setAnswerSelection(undefined)}
               /> : pdf && <ContinuousPdf pdf={pdf} project={project} scrollRoot={reader} pageSizes={pdfPageSizes.current} activeId={activeId} regionMode={region}
                 onSelect={(anchor) => { setAnswerSelection(undefined); setSelection(anchor); }} onFocus={focus} onError={setNotice}
@@ -1106,7 +1080,7 @@ export default function App() {
                     </button>
                   ))}
                   {!answerSelection && <button onClick={() => void makeNote("custom", true)}>截图提问</button>}
-                  {selection && !selection.quote && (
+                  {selection && !selection.quote && project.pages.some((item) => item.page === selection.page && (item.source === "ocr" || !item.text.trim())) && (
                     <button
                       disabled={ocr !== null}
                       onClick={() => void recognize(selection.rects[0], selection.page)}
