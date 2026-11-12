@@ -8,9 +8,7 @@ import type {
   StreamEvent,
 } from "../server/app.js";
 import { createApp } from "../server/app.js";
-import {
-  ConfigStore,
-} from "../server/config.js";
+import { ConfigStore } from "../server/config.js";
 import type { ProviderConfigInput } from "../src/types.js";
 
 const openAIConfig: ProviderConfigInput = {
@@ -24,8 +22,7 @@ const openAIConfig: ProviderConfigInput = {
 
 const geminiConfig: ProviderConfigInput = {
   providerId: "gemini",
-  baseURL:
-    "https://generativelanguage.googleapis.com/v1beta/openai",
+  baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
   model: "gemini-test",
   protocol: "chat-completions",
   supportsImages: true,
@@ -38,9 +35,9 @@ const validChat = {
   images: [],
 };
 
-function completedClient(events: StreamEvent[] = [
-  { type: "response.completed" },
-]): ResponsesClient {
+function completedClient(
+  events: StreamEvent[] = [{ type: "response.completed" }],
+): ResponsesClient {
   return {
     responses: {
       async create() {
@@ -122,9 +119,7 @@ describe("InkAsk provider settings", () => {
       baseURL: "https://example.com/v1/responses",
       apiKey: "new-endpoint-key",
     });
-    expect(changedEndpoint.profiles[0].baseURL).toBe(
-      "https://example.com/v1",
-    );
+    expect(changedEndpoint.profiles[0].baseURL).toBe("https://example.com/v1");
     expect(JSON.stringify(changedEndpoint)).not.toContain("new-endpoint-key");
   });
 

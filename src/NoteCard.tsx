@@ -515,7 +515,7 @@ export default function NoteCard(props: Props) {
                   title={
                     props.apiReady
                       ? "发送 · ⌘/Ctrl + Enter"
-                      : "请先在 .env 中配置模型 API"
+                      : "请先在设置中配置模型 API"
                   }
                 >
                   <ArrowUp size={18} />

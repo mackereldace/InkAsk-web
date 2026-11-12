@@ -83,11 +83,7 @@ function requireString(
 }
 
 export function normalizeBaseURL(value: unknown): string {
-  const raw = requireString(
-    value,
-    "服务地址",
-    MAX_BASE_URL_LENGTH,
-  ).trim();
+  const raw = requireString(value, "服务地址", MAX_BASE_URL_LENGTH).trim();
   if (!raw) throw new ConfigValidationError("请填写服务地址。");
 
   let url: URL;
@@ -147,11 +143,7 @@ function normalizeInput(
 
   let apiKey = "";
   if (value.apiKey !== undefined) {
-    apiKey = requireString(
-      value.apiKey,
-      "API Key",
-      MAX_API_KEY_LENGTH,
-    ).trim();
+    apiKey = requireString(value.apiKey, "API Key", MAX_API_KEY_LENGTH).trim();
   }
   if (apiKey && CONTROL_CHARACTER.test(apiKey)) {
     throw new ConfigValidationError("API Key 格式无效。");

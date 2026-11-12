@@ -111,20 +111,38 @@ export interface ApiStatus {
   supportsImages?: boolean;
 }
 
-export type ApiProtocol = 'responses' | 'chat-completions' | 'anthropic';
+export type ApiProtocol = "responses" | "chat-completions" | "anthropic";
 export interface ProviderDefinition {
-  id: string; name: string; shortName: string; baseURL: string; protocol: ApiProtocol;
-  models: string[]; supportsImages: boolean; requiresKey: boolean; docsURL: string;
-  alternateURLs?: {name:string;url:string}[]; hint?: string;
+  id: string;
+  name: string;
+  shortName: string;
+  baseURL: string;
+  protocol: ApiProtocol;
+  models: string[];
+  supportsImages: boolean;
+  requiresKey: boolean;
+  docsURL: string;
+  alternateURLs?: { name: string; url: string }[];
+  hint?: string;
 }
 export interface ProviderProfile {
-  providerId: string; baseURL: string; model: string; protocol: ApiProtocol;
-  supportsImages: boolean; hasKey: boolean;
+  providerId: string;
+  baseURL: string;
+  model: string;
+  protocol: ApiProtocol;
+  supportsImages: boolean;
+  hasKey: boolean;
 }
 export interface ProviderSettings {
-  providers: ProviderDefinition[]; profiles: ProviderProfile[]; activeProviderId: string|null;
+  providers: ProviderDefinition[];
+  profiles: ProviderProfile[];
+  activeProviderId: string | null;
 }
 export interface ProviderConfigInput {
-  providerId: string; baseURL: string; model: string; protocol: ApiProtocol;
-  supportsImages: boolean; apiKey?: string;
+  providerId: string;
+  baseURL: string;
+  model: string;
+  protocol: ApiProtocol;
+  supportsImages: boolean;
+  apiKey?: string;
 }

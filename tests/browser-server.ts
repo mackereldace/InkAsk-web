@@ -1,6 +1,10 @@
 // Explicitly separate from npm dev/start. Deterministic UI QA; no external calls.
 import { resolve } from "node:path";
+import { join } from "node:path";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createApp, type ResponsesClient } from "../server/app";
+import { ConfigStore } from "../server/config";
 const client: ResponsesClient = {
   responses: {
     async create(body) {
@@ -19,6 +23,13 @@ const client: ResponsesClient = {
   },
 };
 const app = createApp({
+  configStore: new ConfigStore(
+    join(
+      await mkdtemp(join(tmpdir(), "inkask-ui-settings-")),
+      "providers.json",
+    ),
+  ),
+  clientFactory: () => client,
   apiKey: "test-only-not-a-real-key",
   model: "本机模拟 · 非真实 AI",
   client,

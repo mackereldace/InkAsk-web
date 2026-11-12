@@ -51,7 +51,9 @@ function data(payload: unknown, lineEnding = "\n"): string {
   return `data: ${JSON.stringify(payload)}${lineEnding}${lineEnding}`;
 }
 
-async function collect(iterable: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
+async function collect(
+  iterable: AsyncIterable<StreamEvent>,
+): Promise<StreamEvent[]> {
   const events: StreamEvent[] = [];
   for await (const event of iterable) events.push(event);
   return events;
@@ -77,7 +79,8 @@ describe("Responses adapter", () => {
       calls += 1;
       capturedURL = requestURL(input);
       capturedBody = JSON.parse(String(init?.body));
-      capturedAuthorization = new Headers(init?.headers).get("authorization") ?? "";
+      capturedAuthorization =
+        new Headers(init?.headers).get("authorization") ?? "";
       capturedRedirect = init?.redirect;
       return sseResponse(
         data({
@@ -92,7 +95,9 @@ describe("Responses adapter", () => {
           }),
       );
     }) as typeof fetch;
-    const client = createProviderClient(config("responses"), { fetch: fetcher });
+    const client = createProviderClient(config("responses"), {
+      fetch: fetcher,
+    });
 
     const events = await collect(
       await client.responses.create({
@@ -128,7 +133,9 @@ describe("Responses adapter", () => {
         headers: { "content-type": "application/json" },
       });
     }) as typeof fetch;
-    const client = createProviderClient(config("responses"), { fetch: fetcher });
+    const client = createProviderClient(config("responses"), {
+      fetch: fetcher,
+    });
 
     const events = await collect(
       await client.responses.create({
@@ -142,7 +149,10 @@ describe("Responses adapter", () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         type: "response.failed",
-        error: expect.objectContaining({ code: "authentication_error", status: 401 }),
+        error: expect.objectContaining({
+          code: "authentication_error",
+          status: 401,
+        }),
       }),
     );
     expect(JSON.stringify(events)).not.toContain("fixture-secret");
@@ -160,7 +170,10 @@ describe("Chat Completions adapter", () => {
         {
           choices: [
             {
-              delta: { reasoning_content: "hidden reasoning", content: "先看 " },
+              delta: {
+                reasoning_content: "hidden reasoning",
+                content: "先看 ",
+              },
               finish_reason: null,
             },
           ],
@@ -274,7 +287,9 @@ describe("Chat Completions adapter", () => {
 
     const eofClient = createProviderClient(config("chat-completions"), {
       fetch: (async () =>
-        sseResponse(data({ choices: [{ delta: { content: "partial" } }] }))) as typeof fetch,
+        sseResponse(
+          data({ choices: [{ delta: { content: "partial" } }] }),
+        )) as typeof fetch,
     });
     const eofEvents = await collect(
       await eofClient.responses.create({
@@ -287,7 +302,9 @@ describe("Chat Completions adapter", () => {
       type: "response.failed",
       error: { code: "incomplete_stream" },
     });
-    expect(eofEvents.some((event) => event.type === "response.completed")).toBe(false);
+    expect(eofEvents.some((event) => event.type === "response.completed")).toBe(
+      false,
+    );
   });
 
   it("handles HTTP 200 JSON errors without leaking provider details", async () => {
@@ -377,7 +394,9 @@ describe("Chat Completions adapter", () => {
           return {
             read() {
               abort.abort();
-              return new Promise<ReadableStreamReadResult<Uint8Array>>(() => undefined);
+              return new Promise<ReadableStreamReadResult<Uint8Array>>(
+                () => undefined,
+              );
             },
             async cancel() {
               cancelled = true;
@@ -437,10 +456,13 @@ describe("Anthropic adapter", () => {
       "event: content_block_delta\r\n" +
       'data: {"type":"content_block_delta","delta":\r\n' +
       'data: {"type":"text_delta","text":"公式 😊"}}\r\n\r\n' +
-      data({
-        type: "message_delta",
-        delta: { stop_reason: "end_turn" },
-      }, "\r\n") +
+      data(
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+        },
+        "\r\n",
+      ) +
       data({ type: "message_stop" }, "\r\n");
     const fetcher = (async (
       input: Parameters<typeof fetch>[0],
@@ -452,7 +474,9 @@ describe("Anthropic adapter", () => {
       capturedRedirect = init?.redirect;
       return sseResponse(raw, { chunkSize: 1 });
     }) as typeof fetch;
-    const client = createProviderClient(config("anthropic"), { fetch: fetcher });
+    const client = createProviderClient(config("anthropic"), {
+      fetch: fetcher,
+    });
 
     const events = await collect(
       await client.responses.create({
@@ -560,7 +584,9 @@ describe("Anthropic adapter", () => {
       type: "response.incomplete",
       error: { code: "output_limit" },
     });
-    expect(events.some((event) => event.type === "response.completed")).toBe(false);
+    expect(events.some((event) => event.type === "response.completed")).toBe(
+      false,
+    );
   });
 
   it("does not complete on EOF and sanitizes in-stream errors", async () => {
@@ -613,7 +639,9 @@ describe("Anthropic adapter", () => {
       type: "response.failed",
       error: { code: "authentication_error", status: 401 },
     });
-    expect(JSON.stringify(errorEvents)).not.toContain("anthropic-secret-detail");
+    expect(JSON.stringify(errorEvents)).not.toContain(
+      "anthropic-secret-detail",
+    );
     expect(JSON.stringify(errorEvents)).not.toContain("fixture-key");
   });
 });

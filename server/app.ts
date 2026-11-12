@@ -382,10 +382,7 @@ async function createRuntimeClient(
   return factory(config, fetchImpl ? { fetch: fetchImpl } : undefined);
 }
 
-function settingsFailure(
-  reply: FastifyReply,
-  error: unknown,
-): FastifyReply {
+function settingsFailure(reply: FastifyReply, error: unknown): FastifyReply {
   if (error instanceof ConfigValidationError) {
     return reply
       .code(400)
@@ -492,7 +489,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
         },
       }
     : false;
-  const app = Fastify({ logger });
+  const app = Fastify({ logger, bodyLimit: 32 * 1024 * 1024 });
   const clientFactory = options.clientFactory ?? createProviderClient;
   const environmentClient = createOpenAIClient(options);
   const environmentModel = options.model?.trim() ?? "";

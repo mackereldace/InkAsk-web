@@ -37,6 +37,7 @@ import {
 import PdfPage from "./PdfPage";
 import Connections from "./Connections";
 import NoteCard from "./NoteCard";
+import ApiSettings from "./ApiSettings";
 import { cancelOcr, recognizePage } from "./ocr";
 import { dataUrl, streamChat } from "./chat";
 import { buildContext } from "./core/context";
@@ -94,7 +95,10 @@ export default function App() {
       viewport: PageViewport;
     }>(),
     [busyIds, setBusyIds] = useState(new Set<string>()),
-    [settings, setSettings] = useState(false),
+    [settings, setSettings] = useState(
+      () =>
+        new URLSearchParams(window.location.search).get("settings") === "api",
+    ),
     [templateId, setTemplateId] = useState(""),
     [exportMenu, setExportMenu] = useState(false),
     [search, setSearch] = useState("");
@@ -819,7 +823,7 @@ export default function App() {
           </div>
           <button className="sidebar-action" onClick={() => setSettings(true)}>
             <Settings2 size={16} />
-            模板与设置
+            API 与模板
           </button>
           <span className="version">InkAsk 0.1 · 思考，留在原文旁</span>
         </div>
@@ -1291,7 +1295,7 @@ export default function App() {
         <footer className="app-footer">
           <span>
             <span className="status-dot" />
-            {status.configured ? `AI 已连接 · ${status.model}` : "本地阅读模式"}
+            {status.configured ? `AI 已配置 · ${status.model}` : "本地阅读模式"}
           </span>
           <span>
             边读，边问。让理解多走一步。 <Sparkles size={11} />
@@ -1310,13 +1314,13 @@ export default function App() {
             className="settings-modal"
             role="dialog"
             aria-modal="true"
-            aria-label="模板与设置"
+            aria-label="API 与模板"
             onClick={(e) => e.stopPropagation()}
           >
             <header>
               <div>
                 <span className="eyebrow">MAKE IT YOURS</span>
-                <h2>模板与设置</h2>
+                <h2>API 与模板</h2>
               </div>
               <button
                 className="icon-button"
@@ -1327,34 +1331,7 @@ export default function App() {
               </button>
             </header>
             <div className="settings-content">
-              <h3>模型连接</h3>
-              <p>
-                在项目根目录复制 <code>.env.example</code> 为 <code>.env</code>
-                ，填写 <code>OPENAI_API_KEY</code> 与支持图片的{" "}
-                <code>OPENAI_MODEL</code>，然后重启本地服务。
-              </p>
-              <div className="config-status">
-                <span
-                  className={"status-dot " + (!status.configured ? "off" : "")}
-                />
-                {status.configured
-                  ? `当前模型：${status.model}`
-                  : "尚未配置 · PDF 与 OCR 可独立使用"}
-                <button
-                  onClick={() =>
-                    void fetch("/api/status")
-                      .then((r) => r.json())
-                      .then(setStatus)
-                      .catch((e) => setNotice(err(e)))
-                  }
-                >
-                  刷新状态
-                </button>
-              </div>
-              <p className="small muted">
-                PDF 与笔记保存于当前浏览器；AI
-                提问时会发送本次参考文字、历史对话和所附图片给配置的模型服务。请定期导出项目备份。
-              </p>
+              <ApiSettings status={status} onChange={setStatus} />
               <h3>提示词模板</h3>
               {!project ? (
                 <p className="muted">

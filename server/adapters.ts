@@ -54,7 +54,10 @@ function safeStatus(status?: number): {
     return { code: "rate_limit", message: "AI 服务请求过于频繁，请稍后重试。" };
   }
   if (status === undefined || status >= 500) {
-    return { code: "upstream_unavailable", message: "暂时无法连接 AI 服务，请检查网络后重试。" };
+    return {
+      code: "upstream_unavailable",
+      message: "暂时无法连接 AI 服务，请检查网络后重试。",
+    };
   }
   return { code: "upstream_error", message: "AI 服务返回错误，请稍后重试。" };
 }
@@ -130,10 +133,7 @@ function textFromPart(part: unknown): string {
 function imageFromPart(part: unknown): string | undefined {
   if (!isRecord(part) || part.type !== "input_image") return undefined;
   if (typeof part.image_url === "string") return part.image_url;
-  if (
-    isRecord(part.image_url) &&
-    typeof part.image_url.url === "string"
-  ) {
+  if (isRecord(part.image_url) && typeof part.image_url.url === "string") {
     return part.image_url.url;
   }
   return undefined;
@@ -188,14 +188,14 @@ function normalizeInput(body: Record<string, unknown>): NormalizedInput {
   return { system: systemParts.join("\n\n"), messages };
 }
 
-function chatContent(message: ChatMessage): string | Array<Record<string, unknown>> {
+function chatContent(
+  message: ChatMessage,
+): string | Array<Record<string, unknown>> {
   if (message.role === "assistant" || !message.images.length) {
     return message.text;
   }
   return [
-    ...(message.text
-      ? [{ type: "text", text: message.text }]
-      : []),
+    ...(message.text ? [{ type: "text", text: message.text }] : []),
     ...message.images.map((url) => ({
       type: "image_url",
       image_url: { url },
@@ -203,14 +203,18 @@ function chatContent(message: ChatMessage): string | Array<Record<string, unknow
   ];
 }
 
-function anthropicContent(message: ChatMessage): string | Array<Record<string, unknown>> {
+function anthropicContent(
+  message: ChatMessage,
+): string | Array<Record<string, unknown>> {
   if (message.role === "assistant") return message.text;
   if (!message.images.length && message.text) return message.text;
 
   const content: Array<Record<string, unknown>> = [];
   if (message.text) content.push({ type: "text", text: message.text });
   for (const image of message.images) {
-    const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/.exec(image);
+    const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/.exec(
+      image,
+    );
     if (!match) {
       throw new Error("INVALID_IMAGE_DATA_URL");
     }
@@ -332,11 +336,7 @@ async function* readSseData(
     while (!completed) {
       const result = await readWithAbort(reader, scope);
       if (result.done) {
-        buffer = appendDecoded(
-          buffer,
-          decoder.decode(),
-          pendingCarriageReturn,
-        );
+        buffer = appendDecoded(buffer, decoder.decode(), pendingCarriageReturn);
         if (pendingCarriageReturn.value) {
           buffer += "\n";
           pendingCarriageReturn.value = false;
@@ -394,7 +394,7 @@ function inStreamErrorEvent(value: unknown): StreamEvent | undefined {
   if (!isRecord(value)) return undefined;
   const rawError =
     value.type === "error"
-      ? value.error ?? value
+      ? (value.error ?? value)
       : isRecord(value.error)
         ? value.error
         : undefined;
@@ -418,7 +418,8 @@ async function fetchEventStream(
       await response.body?.cancel().catch(() => undefined);
       return providerFailure(response.status);
     }
-    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    const contentType =
+      response.headers.get("content-type")?.toLowerCase() ?? "";
     if (!contentType.includes("text/event-stream")) {
       const body = await readLimitedBody(response, scope);
       let parsed: unknown;
@@ -432,11 +433,14 @@ async function fetchEventStream(
           response.status,
         );
       }
-      return inStreamErrorEvent(parsed) ?? failureEvent(
-        "response.failed",
-        "invalid_stream",
-        "AI 服务没有返回可流式读取的回答。",
-        response.status,
+      return (
+        inStreamErrorEvent(parsed) ??
+        failureEvent(
+          "response.failed",
+          "invalid_stream",
+          "AI 服务没有返回可流式读取的回答。",
+          response.status,
+        )
       );
     }
     return response;
@@ -563,10 +567,7 @@ async function* chatEvents(
       if (typeof delta.content === "string" && delta.content) {
         yield { type: "response.output_text.delta", delta: delta.content };
       }
-      if (
-        typeof choice.finish_reason === "string" &&
-        choice.finish_reason
-      ) {
+      if (typeof choice.finish_reason === "string" && choice.finish_reason) {
         const finish = chatFinishEvent(choice.finish_reason);
         terminal = true;
         yield finish.event;
@@ -768,7 +769,10 @@ async function* responsesEvents(
         yield providerFailure(statusFromError(raw));
         return;
       }
-      if (type === "response.output_text.delta" && typeof raw.delta === "string") {
+      if (
+        type === "response.output_text.delta" &&
+        typeof raw.delta === "string"
+      ) {
         yield { type, delta: raw.delta };
         continue;
       }
@@ -814,20 +818,10 @@ export function createProviderClient(
     responses: {
       async create(body, requestOptions) {
         if (config.protocol === "responses") {
-          return responsesEvents(
-            body,
-            config,
-            fetcher,
-            requestOptions,
-          );
+          return responsesEvents(body, config, fetcher, requestOptions);
         }
         if (config.protocol === "anthropic") {
-          return anthropicEvents(
-            body,
-            config,
-            fetcher,
-            requestOptions,
-          );
+          return anthropicEvents(body, config, fetcher, requestOptions);
         }
         return chatEvents(body, config, fetcher, requestOptions);
       },
