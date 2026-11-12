@@ -130,7 +130,7 @@ function retrieve(
   note: Note,
   question: string,
 ): ScoredChunk[] {
-  const query = words(`${note.anchor.quote}\n${question}`);
+  const query = words(`${note.anchor.quote}\n${note.branchQuote ?? ""}\n${question}`);
   const terms = new Set(query);
   if (!terms.size) return [];
 
@@ -244,7 +244,7 @@ function renderPrompt(
     document_title: project.document.name,
     page_number: String(note.anchor.page),
     coverage,
-    selected_text: note.anchor.quote.trim() || "（未选择文字）",
+    selected_text: (note.parentId ? note.branchQuote : note.anchor.quote)?.trim() || "（未选择文字）",
     context_with_source_ids: sourceSection(sources),
     branch_quote: note.branchQuote?.trim() || "（无）",
     question: question.trim() || "请按当前任务处理选中内容。",
@@ -257,7 +257,10 @@ function renderPrompt(
     variables,
     Boolean(note.branchQuote?.trim()),
   );
-  return `${SYSTEM_PROMPT}\n\n${userPrompt}`;
+  const readingOrigin = note.parentId
+    ? "【当前阅读位置】\n用户正在阅读上一层 AI 回答，当前选文来自该回答，不是 PDF 原文。请结合继承的对话理解这段回答；下方带来源 ID 的文档片段仍来自原始 PDF。\n\n"
+    : "";
+  return `${SYSTEM_PROMPT}\n\n${readingOrigin}${userPrompt}`;
 }
 
 export function buildContext(input: BuildContextInput): ContextResult {

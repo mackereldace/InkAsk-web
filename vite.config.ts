@@ -9,5 +9,5 @@ export default defineConfig({
     proxy: { "/api": "http://127.0.0.1:8787" },
   },
   build: { target: "es2022" },
-  test: { environment: "node", include: ["tests/**/*.test.ts"] },
+  test: { environment: "node", include: ["tests/**/*.test.{ts,tsx}"] },
 });

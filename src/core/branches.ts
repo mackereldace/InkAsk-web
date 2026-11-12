@@ -1,4 +1,4 @@
-import type { HistoryMessage, Note, Project } from "../types";
+import type { HistoryMessage, Note, Project, Task } from "../types";
 
 function id(): string {
   return (
@@ -30,9 +30,9 @@ function historyThrough(note: Note, parentMessageId: string): HistoryMessage[] {
   return snapshot;
 }
 
-function branchTemplateId(project: Project): string {
+function branchTemplateId(project: Project, task: Task): string {
   const custom = project.templates.find(
-    (template) => template.task === "custom",
+    (template) => template.task === task,
   );
   if (!custom)
     throw new Error("No custom prompt template is available for this branch.");
@@ -65,6 +65,7 @@ export function createBranch(
   parentNote: Note,
   parentMessageId: string,
   quote = "",
+  task: Task = "custom",
 ): Note {
   const note = project.notes.find(
     (candidate) => candidate.id === parentNote.id,
@@ -84,9 +85,9 @@ export function createBranch(
     ...(cleanQuote ? { branchQuote: cleanQuote } : {}),
     inheritedHistory: historyThrough(note, parentMessageId),
     collapsed: false,
-    task: "custom",
-    templateId: branchTemplateId(project),
-    draft: cleanQuote ? "请进一步解释这段回答。" : "请继续说明。",
+    task,
+    templateId: branchTemplateId(project, task),
+    draft: "",
     draftAssetIds: [],
     messages: [],
     createdAt: Date.now(),

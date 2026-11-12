@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowUpRight,
@@ -30,18 +30,16 @@ import {
   openPdf,
   extractPage,
   renderImage,
-  screenRect,
   type PDFDocumentProxy,
-  type PageViewport,
 } from "./pdf";
-import PdfPage from "./PdfPage";
-import Connections from "./Connections";
-import NoteCard from "./NoteCard";
+import ContinuousPdf from "./ContinuousPdf";
+import AnswerReader from "./AnswerReader";
 import ApiSettings from "./ApiSettings";
 import { cancelOcr, recognizePage } from "./ocr";
 import { dataUrl, streamChat } from "./chat";
 import { buildContext } from "./core/context";
 import { createBranch, descendantIds } from "./core/branches";
+import { answerFor, parentReadingTarget, readingTrail, type ReadingTarget } from "./core/reading";
 import { DEFAULT_TEMPLATES, TASK_LABELS } from "./core/templates";
 import {
   saveProject,
@@ -88,12 +86,10 @@ export default function App() {
     [region, setRegion] = useState(false),
     [activeId, setActiveId] = useState<string>(),
     [focusId, setFocusId] = useState<string>(),
+    [readingMessageId, setReadingMessageId] = useState<string>(),
+    [answerSelection, setAnswerSelection] = useState<{ noteId: string; messageId: string; quote: string }>(),
+    [navigation, setNavigation] = useState(0),
     [ocr, setOcr] = useState<number | null>(null),
-    [pageSize, setPageSize] = useState<{
-      width: number;
-      height: number;
-      viewport: PageViewport;
-    }>(),
     [busyIds, setBusyIds] = useState(new Set<string>()),
     [settings, setSettings] = useState(
       () =>
@@ -113,7 +109,56 @@ export default function App() {
     importInput = useRef<HTMLInputElement>(null),
     openEpoch = useRef(0),
     ocrEpoch = useRef(0),
-    pdfOwned = useRef(new Set<PDFDocumentProxy>());
+    pdfOwned = useRef(new Set<PDFDocumentProxy>()),
+    reader = useRef<HTMLDivElement>(null),
+    readingView = useRef<ReadingTarget | undefined>(undefined),
+    positions = useRef(new Map<string, { top: number; left: number; page?: number; pageOffset?: number }>()),
+    pdfPageSizes = useRef(new Map<number, { width: number; height: number }>()),
+    pendingNavigation = useRef<{ key: string; page?: number } | undefined>(undefined);
+  function viewKey(target?: ReadingTarget) {
+    const note = projectRef.current?.notes.find((n) => n.id === target?.noteId);
+    return note ? `${note.id}:${answerFor(note, target?.messageId)?.id ?? "draft"}` : "pdf";
+  }
+  function navigate(target?: ReadingTarget, page?: number) {
+    const root = reader.current;
+    if (root) {
+      const bounds = root.getBoundingClientRect();
+      const sheet = !readingView.current ? [...root.querySelectorAll<HTMLElement>("[data-pdf-page]")]
+        .find((element) => element.getBoundingClientRect().bottom > bounds.top) : undefined;
+      positions.current.set(viewKey(readingView.current), {
+        top: root.scrollTop, left: root.scrollLeft,
+        ...(sheet ? { page: Number(sheet.dataset.pdfPage), pageOffset: bounds.top - sheet.getBoundingClientRect().top } : {}),
+      });
+    }
+    readingView.current = target;
+    pendingNavigation.current = { key: viewKey(target), page };
+    setFocusId(target?.noteId);
+    setReadingMessageId(target?.messageId);
+    setSelection(undefined);
+    setAnswerSelection(undefined);
+    setRegion(false);
+    window.getSelection()?.removeAllRanges();
+    setNavigation((value) => value + 1);
+    if (target && ocr !== null) {
+      ocrEpoch.current++;
+      void cancelOcr();
+      setOcr(null);
+    }
+  }
+  useLayoutEffect(() => {
+    const root = reader.current;
+    const pending = pendingNavigation.current;
+    if (!root || !pending) return;
+    pendingNavigation.current = undefined;
+    const position = positions.current.get(pending.key);
+    root.scrollTop = position?.top ?? 0;
+    root.scrollLeft = position?.left ?? 0;
+    const targetPage = pending.page ?? position?.page;
+    if (targetPage && pending.key === "pdf") {
+      const sheet = root.querySelector<HTMLElement>(`[data-pdf-page="${targetPage}"]`);
+      if (sheet) root.scrollTop += sheet.getBoundingClientRect().top - root.getBoundingClientRect().top + (pending.page ? -20 : position?.pageOffset ?? 0);
+    }
+  }, [navigation, project?.document.id]);
   const update = useCallback((fn: (p: Project) => void) => {
     const p = projectRef.current;
     if (!p) return;
@@ -214,7 +259,7 @@ export default function App() {
     setDocuments(await listDocuments());
   }
   async function openExisting(id: string) {
-    if (projectRef.current?.document.id === id) return;
+    if (projectRef.current?.document.id === id) { navigate(); return; }
     try {
       await persist();
       const p = await loadProject(id);
@@ -228,7 +273,13 @@ export default function App() {
     setLoading(true);
     setSelection(undefined);
     setFocusId(undefined);
+    setReadingMessageId(undefined);
+    setAnswerSelection(undefined);
     setActiveId(undefined);
+    readingView.current = undefined;
+    positions.current.clear();
+    pdfPageSizes.current.clear();
+    pendingNavigation.current = { key: "pdf", page: p.view.page };
     ocrEpoch.current++;
     void cancelOcr();
     setOcr(null);
@@ -253,7 +304,6 @@ export default function App() {
       revision.current++;
       setProject(p);
       setSaved("正在保存…");
-      setPageSize(undefined);
       if (previous) {
         pdfOwned.current.delete(previous);
         void previous.destroy();
@@ -337,28 +387,35 @@ export default function App() {
     }
   }
   function pageTo(page: number) {
-    if (!project) return;
-    update((p) => {
-      p.view.page = Math.min(Math.max(1, page), p.document.pageCount);
-    });
-    setSelection(undefined);
-    setRegion(false);
-    setFocusId(undefined);
+    const p = projectRef.current;
+    if (!p) return;
+    const target = Math.min(Math.max(1, page), p.document.pageCount);
+    update((project) => { project.view.page = target; });
+    navigate(undefined, target);
     setActiveId(undefined);
   }
-  function focus(id: string) {
-    const n = projectRef.current?.notes.find((n) => n.id === id);
-    if (!n) return;
-    pageTo(n.anchor.page);
+  function focus(id: string, messageId?: string) {
+    if (!projectRef.current?.notes.some((note) => note.id === id)) return;
+    navigate({ noteId: id, messageId });
     setActiveId(id);
-    setFocusId(n.parentId ? id : undefined);
-    setTimeout(
-      () =>
-        document
-          .getElementById(`note-${id}`)
-          ?.scrollIntoView({ behavior: "smooth", block: "nearest" }),
-      100,
-    );
+  }
+  function back() {
+    const p = projectRef.current;
+    if (!p || !focusId) return;
+    const parent = parentReadingTarget(p.notes, focusId);
+    if (parent) focus(parent.noteId, parent.messageId);
+    else navigate();
+  }
+  function removeNote(id: string) {
+    const p = projectRef.current;
+    if (!p) return;
+    const ids = new Set([id, ...descendantIds(p.notes, id)]);
+    if (focusId && ids.has(focusId)) {
+      const parent = parentReadingTarget(p.notes, id);
+      navigate(parent);
+    }
+    for (const child of ids) controllers.current.get(child)?.abort();
+    update((project) => { project.notes = project.notes.filter((note) => !ids.has(note.id)); });
   }
   async function attach(id: string, files: File[]) {
     for (const file of files) {
@@ -424,7 +481,14 @@ export default function App() {
   }
   async function makeNote(task: Task, withScreenshot = false) {
     const p = projectRef.current;
-    if (!p || !selection) return;
+    if (!p) return;
+    if (answerSelection) {
+      const parent = p.notes.find((note) => note.id === answerSelection.noteId);
+      const message = parent?.messages.find((message) => message.id === answerSelection.messageId);
+      if (parent && message) branch(parent, message, answerSelection.quote, task);
+      return;
+    }
+    if (!selection) return;
     const template = p.templates.find((t) => t.task === task) ?? p.templates[0];
     const n: Note = {
       id: uid(),
@@ -440,18 +504,8 @@ export default function App() {
       createdAt: Date.now(),
     };
     update((p) => p.notes.push(n));
-    setActiveId(n.id);
-    setFocusId(undefined);
-    setSelection(undefined);
-    setRegion(false);
+    focus(n.id);
     if (withScreenshot || !n.anchor.quote) await screenshot(n);
-    setTimeout(
-      () =>
-        document
-          .getElementById(`note-${n.id}`)
-          ?.scrollIntoView({ behavior: "smooth", block: "nearest" }),
-      100,
-    );
   }
   function context(n: Note) {
     const p = projectRef.current!;
@@ -574,19 +628,18 @@ export default function App() {
       void persist().catch(() => {});
     }
   }
-  function branch(parent: Note, message: Message, quote?: string) {
+  function branch(parent: Note, message: Message, quote?: string, task: Task = "custom") {
     const p = projectRef.current;
     if (!p) return;
-    const n = createBranch(p, parent, message.id, quote);
+    const n = createBranch(p, parent, message.id, quote, task);
     update((p) => p.notes.push(n));
-    setActiveId(n.id);
-    if (parent.parentId) setFocusId(n.id);
+    focus(n.id);
   }
-  async function recognize(rect?: Anchor["rects"][0]) {
+  async function recognize(rect?: Anchor["rects"][0], selectedPage?: number) {
     const d = pdfRef.current,
       p = projectRef.current;
     if (!d || !p || ocr !== null) return;
-    const page = p.view.page,
+    const page = selectedPage ?? p.view.page,
       docId = p.document.id,
       epoch = ++ocrEpoch.current;
     setOcr(0);
@@ -678,14 +731,8 @@ export default function App() {
     currentText = project?.pages.find((p) => p.page === page),
     roots =
       project?.notes.filter((n) => !n.parentId && n.anchor.page === page) ?? [],
-    focused = project?.notes.find((n) => n.id === focusId),
-    visible = focused ? [focused] : roots;
-  const parents: Note[] = [];
-  let ancestor = focused;
-  while (ancestor) {
-    parents.unshift(ancestor);
-    ancestor = project?.notes.find((n) => n.id === ancestor?.parentId);
-  }
+    focused = project?.notes.find((n) => n.id === focusId);
+  const parents = readingTrail(project?.notes ?? [], focusId);
   const totalNotes = project?.notes.length ?? 0,
     donePages = project?.pages.filter((p) => p.status === "ready").length ?? 0;
   return (
@@ -728,7 +775,7 @@ export default function App() {
           href="#"
           onClick={(e) => {
             e.preventDefault();
-            setFocusId(undefined);
+            navigate();
           }}
         >
           <span className="brand-icon">
@@ -974,283 +1021,71 @@ export default function App() {
           <>
             <div className="document-heading">
               <div>
-                <span className="eyebrow">READ · ASK · UNDERSTAND</span>
-                <h1>{project.document.name.replace(/\.pdf$/i, "")}</h1>
-                <p>
-                  {project.document.pageCount} 页 <span>·</span> {totalNotes}{" "}
-                  个思考便签 <span>·</span> 已提取 {donePages} 页文字
-                </p>
+                <span className="eyebrow">{focused ? `READING CHAIN · 第 ${parents.length} 层` : "READ · ASK · UNDERSTAND"}</span>
+                <h1>{focused ? focused.title : project.document.name.replace(/\.pdf$/i, "")}</h1>
+                <p>{focused ? "阅读回答，选中文字继续提问" : <>{project.document.pageCount} 页 <span>·</span> {totalNotes} 个思考便签 <span>·</span> 已提取 {donePages} 页文字</>}</p>
               </div>
-              <span className="document-tag">
-                <span />
-                学习资料
-              </span>
+              <span className="document-tag"><span />{focused ? "回答阅读" : "连续阅读"}</span>
             </div>
-            <div className="reader-toolbar">
+            {focused ? <div className="reader-toolbar answer-navigation">
+              <button className="back-reading" onClick={back}><ChevronLeft size={17} />返回上一层</button>
+              <nav aria-label="阅读层级" className="reading-trail">
+                <button onClick={() => navigate()} title={project.document.name}><FileText size={13} />原始 PDF</button>
+                {parents.map((note, index) => <span key={note.id}><ChevronRight size={12} />
+                  <button aria-current={note.id === focusId ? "page" : undefined} disabled={note.id === focusId}
+                    onClick={() => focus(note.id, parents[index + 1]?.parentMessageId)} title={note.title}>{note.title}</button>
+                </span>)}
+              </nav>
+            </div> : <div className="reader-toolbar">
               <div className="page-controls">
-                <button
-                  className="icon-button"
-                  aria-label="上一页"
-                  disabled={page <= 1}
-                  onClick={() => pageTo(page - 1)}
-                >
-                  <ChevronLeft size={17} />
-                </button>
-                <input
-                  aria-label="页码"
-                  type="number"
-                  min="1"
-                  max={project.document.pageCount}
-                  value={page}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    if (n) pageTo(n);
-                  }}
-                />
+                <button className="icon-button" aria-label="上一页" disabled={page <= 1} onClick={() => pageTo(page - 1)}><ChevronLeft size={17} /></button>
+                <input aria-label="页码" type="number" min="1" max={project.document.pageCount} value={page}
+                  onChange={(e) => { const n = Number(e.target.value); if (n) pageTo(n); }} />
                 <span>/ {project.document.pageCount}</span>
-                <button
-                  className="icon-button"
-                  aria-label="下一页"
-                  disabled={page >= project.document.pageCount}
-                  onClick={() => pageTo(page + 1)}
-                >
-                  <ChevronRight size={17} />
-                </button>
+                <button className="icon-button" aria-label="下一页" disabled={page >= project.document.pageCount} onClick={() => pageTo(page + 1)}><ChevronRight size={17} /></button>
               </div>
               <div className="toolbar-divider" />
               <div className="zoom-controls">
-                <button
-                  className="icon-button"
-                  aria-label="缩小"
-                  onClick={() =>
-                    update((p) => {
-                      p.view.scale = Math.max(0.4, p.view.scale - 0.1);
-                    })
-                  }
-                >
-                  <Minus size={15} />
-                </button>
+                <button className="icon-button" aria-label="缩小" onClick={() => update((p) => { p.view.scale = Math.max(0.4, p.view.scale - 0.1); })}><Minus size={15} /></button>
                 <span>{Math.round(project.view.scale * 100)}%</span>
-                <button
-                  className="icon-button"
-                  aria-label="放大"
-                  onClick={() =>
-                    update((p) => {
-                      p.view.scale = Math.min(2, p.view.scale + 0.1);
-                    })
-                  }
-                >
-                  <Plus size={15} />
-                </button>
-                <button
-                  className="icon-button"
-                  aria-label="旋转页面"
-                  onClick={() =>
-                    update((p) => {
-                      p.view.rotation = (p.view.rotation + 90) % 360;
-                    })
-                  }
-                >
-                  <RotateCw size={15} />
-                </button>
-                <button
-                  className="icon-button"
-                  aria-label="适合宽度"
-                  onClick={() =>
-                    update((p) => {
-                      p.view.scale = 0.95;
-                    })
-                  }
-                >
-                  <Maximize2 size={15} />
-                </button>
+                <button className="icon-button" aria-label="放大" onClick={() => update((p) => { p.view.scale = Math.min(2, p.view.scale + 0.1); })}><Plus size={15} /></button>
+                <button className="icon-button" aria-label="旋转页面" onClick={() => update((p) => { p.view.rotation = (p.view.rotation + 90) % 360; })}><RotateCw size={15} /></button>
+                <button className="icon-button" aria-label="适合宽度" onClick={() => update((p) => {
+                  const text = pdfPageSizes.current.get(p.view.page) ?? p.pages.find((item) => item.page === p.view.page);
+                  const width = p.view.rotation % 180 ? text?.height ?? 800 : text?.width ?? 600;
+                  p.view.scale = Math.max(0.4, Math.min(2, ((reader.current?.clientWidth ?? 700) - 76) / width));
+                })}><Maximize2 size={15} /></button>
               </div>
               <div className="toolbar-spacer" />
-              <button
-                className={"tool-button " + (region ? "selected" : "")}
-                onClick={() => {
-                  setRegion(!region);
-                  setSelection(undefined);
-                }}
-              >
-                <Highlighter size={15} />
-                {region ? "正在框选" : "框选区域"}
+              <button className={"tool-button " + (region ? "selected" : "")} onClick={() => { setRegion(!region); setSelection(undefined); }}>
+                <Highlighter size={15} />{region ? "正在框选" : "框选区域"}
               </button>
-              {ocr !== null ? (
-                <button className="tool-button" onClick={() => void stopOcr()}>
-                  <Loader2 size={14} className="spin" />
-                  {Math.round(ocr * 100)}% · 取消
-                </button>
-              ) : (
-                <button
-                  className="tool-button"
-                  onClick={() => void recognize()}
-                >
-                  <ScanText size={15} />
-                  {currentText?.source === "ocr" ? "重新识别" : "识别本页"}
-                </button>
-              )}
-              <span className="toolbar-divider" />
-              <span className="notes-count">
-                <MessageSquarePlus size={14} /> {roots.length}
-              </span>
+              {ocr !== null ? <button className="tool-button" onClick={() => void stopOcr()}><Loader2 size={14} className="spin" />{Math.round(ocr * 100)}% · 取消</button> :
+                <button className="tool-button" onClick={() => void recognize()}><ScanText size={15} />{currentText?.source === "ocr" ? "重新识别" : "识别本页"}</button>}
+              <span className="toolbar-divider" /><span className="notes-count"><MessageSquarePlus size={14} /> {roots.length}</span>
+            </div>}
+            {!status.configured && <div className="api-hint"><Sparkles size={14} />
+              <span>阅读已就绪。配置模型 API 后，即可在便签中获得 AI 回答。</span>
+              <button onClick={() => setSettings(true)}>如何配置<ArrowUpRight size={12} /></button>
+            </div>}
+            <div ref={reader} className={"reader-area " + (focused ? "answer-reader-area" : "pdf-reader-area")}>
+              {focused ? <AnswerReader key={`${focused.id}:${readingMessageId ?? "latest"}`} note={focused} messageId={readingMessageId} project={project}
+                busy={busyIds.has(focused.id)} apiReady={status.configured} context={context}
+                onUpdate={(id, change) => update((p) => { const note = p.notes.find((n) => n.id === id); if (note) Object.assign(note, change); })}
+                onSend={(id, prompt) => void send(id, prompt)} onStop={(id) => controllers.current.get(id)?.abort()}
+                onRetry={(id) => void send(id, undefined, true)} onBranch={branch} onDelete={removeNote}
+                onPage={pageTo} onFocus={focus} onAttach={(id, files) => void attach(id, files)} onScreenshot={(note) => void screenshot(note)}
+                onSelect={(note, message, quote) => { setSelection(undefined); setAnswerSelection({ noteId: note.id, messageId: message.id, quote }); }} onClearSelection={() => setAnswerSelection(undefined)}
+              /> : pdf && <ContinuousPdf pdf={pdf} project={project} scrollRoot={reader} pageSizes={pdfPageSizes.current} activeId={activeId} regionMode={region}
+                onSelect={(anchor) => { setAnswerSelection(undefined); setSelection(anchor); }} onFocus={focus} onError={setNotice}
+                onClearSelection={() => setSelection(undefined)}
+                onPageChange={(page) => { if (projectRef.current?.view.page !== page) update((p) => { p.view.page = page; }); }} />}
             </div>
-            {!status.configured && (
-              <div className="api-hint">
-                <Sparkles size={14} />
-                <span>
-                  阅读已就绪。配置模型 API 后，即可在便签中获得 AI 回答。
-                </span>
-                <button onClick={() => setSettings(true)}>
-                  如何配置
-                  <ArrowUpRight size={12} />
-                </button>
-              </div>
-            )}
-            <div className="reader-area">
-              <div
-                className="reading-spread"
-                style={{ minWidth: (pageSize?.width ?? 570) + 405 }}
-              >
-                <Connections notes={roots} viewport={pageSize?.viewport} />
-                <div className="paper-column">
-                  {currentText?.status === "empty" && (
-                    <div className="scan-hint">
-                      <ScanText size={14} />
-                      扫描页面 · 识别文字或框选截图后提问
-                    </div>
-                  )}
-                  {pdf && (
-                    <PdfPage
-                      pdf={pdf}
-                      page={page}
-                      scale={project.view.scale}
-                      rotation={project.view.rotation}
-                      text={currentText}
-                      notes={roots}
-                      regionMode={region}
-                      activeId={activeId}
-                      onSelect={setSelection}
-                      onFocus={focus}
-                      onSize={setPageSize}
-                      onError={setNotice}
-                    />
-                  )}
-                  <div className="page-caption">
-                    {project.document.name}{" "}
-                    <span>
-                      {page} / {project.document.pageCount}
-                    </span>
-                  </div>
-                </div>
-                <aside className="margin-column" aria-label="页边便签">
-                  <div className="margin-heading">
-                    <span>
-                      <Sparkles size={14} />
-                      页边思考
-                    </span>
-                    <small>{focused ? "分支视图" : "让问题在这里生长"}</small>
-                  </div>
-                  {focused && (
-                    <div className="branch-breadcrumb">
-                      <button
-                        onClick={() => {
-                          setFocusId(undefined);
-                          setActiveId(undefined);
-                        }}
-                      >
-                        第 {page} 页
-                      </button>
-                      {parents.map((n) => (
-                        <button key={n.id} onClick={() => focus(n.id)}>
-                          <ChevronRight size={11} />
-                          {n.title.slice(0, 12)}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {!visible.length && (
-                    <div className="empty-notes">
-                      <span className="empty-notes-icon">
-                        <MessageSquarePlus size={24} />
-                      </span>
-                      <h3>
-                        一个好问题，
-                        <br />
-                        是理解的开始。
-                      </h3>
-                      <p>
-                        选中原文中的一段文字，
-                        <br />
-                        或框选一个公式、图表。
-                      </p>
-                      <span className="empty-note-arrow">← 从这里开始</span>
-                    </div>
-                  )}
-                  {visible.map((n, i) => {
-                    const y = pageSize
-                      ? screenRect(pageSize.viewport, n.anchor.rects[0])[1]
-                      : 0;
-                    return (
-                      <div
-                        className="note-position"
-                        key={n.id}
-                        style={{
-                          marginTop:
-                            i === 0 && !focused
-                              ? Math.min(Math.max(0, y - 30), 200)
-                              : 18,
-                        }}
-                      >
-                        <span className="note-connector" />
-                        <NoteCard
-                          note={n}
-                          project={project}
-                          activeId={activeId}
-                          busy={busyIds.has(n.id)}
-                          busyIds={busyIds}
-                          apiReady={status.configured}
-                          context={context}
-                          onUpdate={(id, change) =>
-                            update((p) => {
-                              const n = p.notes.find((n) => n.id === id);
-                              if (n) Object.assign(n, change);
-                            })
-                          }
-                          onSend={(id, prompt) => void send(id, prompt)}
-                          onStop={(id) => controllers.current.get(id)?.abort()}
-                          onRetry={(id) => void send(id, undefined, true)}
-                          onBranch={branch}
-                          onDelete={(id) => {
-                            const p = projectRef.current!;
-                            const ids = new Set([
-                              id,
-                              ...descendantIds(p.notes, id),
-                            ]);
-                            for (const child of ids)
-                              controllers.current.get(child)?.abort();
-                            update((p) => {
-                              p.notes = p.notes.filter((n) => !ids.has(n.id));
-                            });
-                            if (focusId && ids.has(focusId))
-                              setFocusId(undefined);
-                          }}
-                          onPage={pageTo}
-                          onFocus={focus}
-                          onAttach={(id, files) => void attach(id, files)}
-                          onScreenshot={(n) => void screenshot(n)}
-                        />
-                      </div>
-                    );
-                  })}
-                </aside>
-              </div>
-            </div>
-            {selection && (
-              <div className="selection-toolbar">
+            {(selection || answerSelection) && (
+              <div className="selection-toolbar" onMouseDown={(e) => e.preventDefault()}>
                 <div className="selected-excerpt">
-                  {selection.quote
-                    ? `“${selection.quote.slice(0, 50)}${selection.quote.length > 50 ? "…" : ""}”`
+                  {(answerSelection?.quote ?? selection?.quote)
+                    ? `“${(answerSelection?.quote ?? selection?.quote ?? "").slice(0, 50)}${(answerSelection?.quote ?? selection?.quote ?? "").length > 50 ? "…" : ""}”`
                     : "已选择页面区域"}
                 </div>
                 <div className="selection-actions">
@@ -1268,13 +1103,11 @@ export default function App() {
                       {TASK_LABELS[t]}
                     </button>
                   ))}
-                  <button onClick={() => void makeNote("custom", true)}>
-                    截图提问
-                  </button>
-                  {!selection.quote && (
+                  {!answerSelection && <button onClick={() => void makeNote("custom", true)}>截图提问</button>}
+                  {selection && !selection.quote && (
                     <button
                       disabled={ocr !== null}
-                      onClick={() => void recognize(selection.rects[0])}
+                      onClick={() => void recognize(selection.rects[0], selection.page)}
                     >
                       <ScanText size={13} />
                       识别区域
@@ -1283,7 +1116,7 @@ export default function App() {
                   <button
                     className="icon-button"
                     aria-label="取消选区"
-                    onClick={() => setSelection(undefined)}
+                    onClick={() => { setSelection(undefined); setAnswerSelection(undefined); window.getSelection()?.removeAllRanges(); }}
                   >
                     <X size={15} />
                   </button>

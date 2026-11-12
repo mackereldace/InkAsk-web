@@ -126,12 +126,21 @@ export default function PdfPage({
       );
     if (rects.length) onSelect({ page, quote, rects });
   }
+  const selectionCallback = useRef(selection);
+  selectionCallback.current = selection;
+  useEffect(() => {
+    const changed = () => selectionCallback.current();
+    document.addEventListener("selectionchange", changed);
+    return () => document.removeEventListener("selectionchange", changed);
+  }, []);
   return (
     <div
       ref={wrap}
       className={"pdf-page" + (regionMode ? " region-mode" : "")}
       style={{ width: vp?.width ?? 600, height: vp?.height ?? 800 }}
       onMouseUp={selection}
+      onKeyUp={selection}
+      onTouchEnd={selection}
     >
       <canvas
         ref={canvas}
@@ -198,10 +207,11 @@ export default function PdfPage({
                 className={"anchor-dot " + (n.id === activeId ? "active" : "")}
                 style={{
                   top: Math.max(0, screenRect(vp, n.anchor.rects[0])[1] - 4),
-                  left: vp.width - 12,
+                  left: Math.max(0, vp.width - 30),
                 }}
                 onClick={() => onFocus(n.id)}
                 title={n.title}
+                aria-label={`打开便签 ${i + 1}：${n.title}`}
               >
                 {i + 1}
               </button>
