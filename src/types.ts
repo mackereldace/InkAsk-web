@@ -14,14 +14,10 @@ export interface PageText {
   width: number;
   height: number;
 }
-export interface AnchorFragment {
+export interface Anchor {
   page: number;
   rects: Rect[];
   quote: string;
-}
-export interface Anchor extends AnchorFragment {
-  /** Present only when the selection spans multiple PDF pages, in reading order. */
-  fragments?: AnchorFragment[];
 }
 export interface Source {
   rects?: Rect[];

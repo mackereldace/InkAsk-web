@@ -5,7 +5,6 @@ import { floatingPosition, type ScreenBox } from "./core/floating";
 import type { Task } from "./types";
 interface Props {
   quote: string; initialQuestion?: string; imageOnly?: boolean; cropAvailable?: boolean; apiReady: boolean;
-  selecting?: boolean;
   getAnchor: () => ScreenBox | undefined;
   boundary: () => ScreenBox;
   onSubmit: (task: Task, question: string, images: File[], includeCrop: boolean) => Promise<void>;
@@ -26,9 +25,9 @@ export default function SelectionPopover(props: Props) {
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
     measure(); const observer = new ResizeObserver(schedule); if (box.current) observer.observe(box.current);
-    window.addEventListener("scroll", schedule, true); window.addEventListener("resize", schedule); window.addEventListener("pointermove", schedule, true);
+    window.addEventListener("scroll", schedule, true); window.addEventListener("resize", schedule);
     window.visualViewport?.addEventListener("resize", schedule);
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); window.removeEventListener("scroll", schedule, true); window.removeEventListener("resize", schedule); window.removeEventListener("pointermove", schedule, true); window.visualViewport?.removeEventListener("resize", schedule); };
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); window.removeEventListener("scroll", schedule, true); window.removeEventListener("resize", schedule); window.visualViewport?.removeEventListener("resize", schedule); };
   }, [props.getAnchor, props.boundary]);
   async function submit(task: Task) {
     if (busy) return;
@@ -41,7 +40,7 @@ export default function SelectionPopover(props: Props) {
   function addImages(files: File[]) {
     setImages((current) => [...current, ...files.filter((file) => ["image/png", "image/jpeg", "image/webp"].includes(file.type) && file.size <= 10 * 1024 * 1024)].slice(0, 4));
   }
-  return createPortal(<div ref={box} className={"selection-popover" + (props.selecting ? " is-selecting" : "")} inert={props.selecting} role="dialog" aria-label="选区提问" style={{ left: position?.left ?? 0, top: position?.top ?? 0, width: position?.width ?? 360, maxHeight: position?.maxHeight, visibility: position ? "visible" : "hidden" }}
+  return createPortal(<div ref={box} className="selection-popover" role="dialog" aria-label="选区提问" style={{ left: position?.left ?? 0, top: position?.top ?? 0, width: position?.width ?? 360, maxHeight: position?.maxHeight, visibility: position ? "visible" : "hidden" }}
     onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); props.onClose(); } }}>
     <header><span>{props.imageOnly ? "已选择页面区域" : `“${props.quote.slice(0, 68)}${props.quote.length > 68 ? "…" : ""}”`}</span><button aria-label="取消选区" onClick={props.onClose}><X size={15} /></button></header>
     <textarea aria-label="关于选区的问题" placeholder="想了解什么？留空则解释所选内容" value={question} rows={3} disabled={busy}

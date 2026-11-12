@@ -1,7 +1,7 @@
 import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from "pdfjs-dist";
-import type { Anchor, PageText, Rect } from "./types";
+import type { PageText, Rect } from "./types";
 import { boundedRenderRatio } from "./core/pdf-reader";
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 export { pdfjs };
@@ -78,42 +78,5 @@ export async function renderImage(
     await page.render({ canvas, canvasContext: context, viewport, transform: [1, 0, 0, 1, -crop[0], -crop[1]] }).promise;
     const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("无法生成截图")), "image/png"));
     return { blob, viewport, crop };
-  } finally { canvas.width = 0; canvas.height = 0; }
-}
-
-/** Preserve every selected page in one bounded attachment, in reading order. */
-export async function renderAnchorImage(pdf: PDFDocumentProxy, anchor: Anchor, rotation = 0): Promise<Blob> {
-  const parts = anchor.fragments?.length ? anchor.fragments : [anchor];
-  const bounds = (rects: Rect[]): Rect | undefined => rects.length ? [
-    Math.min(...rects.map((r) => r[0])), Math.min(...rects.map((r) => r[1])),
-    Math.max(...rects.map((r) => r[2])), Math.max(...rects.map((r) => r[3])),
-  ] : undefined;
-  if (parts.length === 1) return (await renderImage(await pdf.getPage(parts[0].page), bounds(parts[0].rects), rotation)).blob;
-  const sizes = [];
-  for (const part of parts) {
-    const page = await pdf.getPage(part.page);
-    const viewport = page.getViewport({ scale: 2, rotation: (page.rotate + rotation) % 360 });
-    const box = bounds(part.rects);
-    const crop = box ? screenRect(viewport, box) : [0, 0, viewport.width, viewport.height];
-    sizes.push({ part, box, width: Math.min(viewport.width, crop[2]) - Math.max(0, crop[0]),
-      height: Math.min(viewport.height, crop[3]) - Math.max(0, crop[1]) });
-  }
-  const width = Math.max(...sizes.map((size) => size.width)), height = sizes.reduce((sum, size) => sum + size.height, 0);
-  const ratio = boundedRenderRatio(width, height, 1), canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.ceil(width * ratio)); canvas.height = Math.max(1, Math.ceil(height * ratio));
-  try {
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("无法创建截图画布");
-    context.fillStyle = "white"; context.fillRect(0, 0, canvas.width, canvas.height);
-    let offset = 0;
-    // Decode and release one crop at a time: memory never grows with page count.
-    for (const size of sizes) {
-      const { blob } = await renderImage(await pdf.getPage(size.part.page), size.box, rotation);
-      const bitmap = await createImageBitmap(blob);
-      try { context.drawImage(bitmap, 0, offset, size.width * ratio, size.height * ratio); }
-      finally { bitmap.close(); }
-      offset += size.height * ratio;
-    }
-    return await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("无法生成截图")), "image/png"));
   } finally { canvas.width = 0; canvas.height = 0; }
 }

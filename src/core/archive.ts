@@ -285,7 +285,6 @@ function remapProject(project: Project): Project {
         page: note.anchor.page,
         rects: note.anchor.rects.map((rect) => [...rect]),
         quote: remapText(note.anchor.quote, allIds),
-        ...(note.anchor.fragments ? { fragments: note.anchor.fragments.map((fragment) => ({ ...fragment, quote: remapText(fragment.quote, allIds), rects: fragment.rects.map((rect) => [...rect]) })) } : {}),
       },
       ...(note.parentId
         ? { parentId: noteIds.get(note.parentId) ?? note.parentId }
@@ -353,8 +352,6 @@ function validateReferences(project: Project): void {
     if (note.anchor.page < 1 || note.anchor.page > project.document.pageCount) {
       throw new Error("A note anchor is outside the document page range.");
     }
-    if (note.anchor.fragments?.some((fragment, index, fragments) => fragment.page < 1 || fragment.page > project.document.pageCount || (index > 0 && fragment.page <= fragments[index - 1].page)) || (note.anchor.fragments && note.anchor.fragments[0].page !== note.anchor.page))
-      throw new Error("Invalid cross-page anchor order or page range.");
     for (const message of note.messages) {
       if (messages.has(message.id))
         throw new Error("Document contains duplicate message IDs.");
@@ -493,18 +490,6 @@ function validateManifest(value: unknown): asserts value is Manifest {
       assertRect(rect, `note.anchor.rects[${rectIndex}]`),
     );
     assertString(item.anchor.quote, "note.anchor.quote");
-    if (item.anchor.fragments !== undefined) {
-      assertArray(item.anchor.fragments, "note.anchor.fragments");
-      if (item.anchor.fragments.length < 2) throw new Error("A cross-page anchor needs at least two fragments.");
-      for (const fragment of item.anchor.fragments) {
-        assertRecord(fragment, "anchor.fragment");
-        assertNumber(fragment.page, "anchor.fragment.page");
-        assertString(fragment.quote, "anchor.fragment.quote");
-        assertArray(fragment.rects, "anchor.fragment.rects");
-        if (!fragment.rects.length) throw new Error("An anchor fragment requires a rectangle.");
-        fragment.rects.forEach((rect) => assertRect(rect, "anchor.fragment.rect"));
-      }
-    }
     if (item.sourceAssetId !== undefined) assertString(item.sourceAssetId, "note.sourceAssetId");
     if (item.answerAnchor !== undefined) {
       assertRecord(item.answerAnchor, "note.answerAnchor");

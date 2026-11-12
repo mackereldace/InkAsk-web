@@ -15,8 +15,6 @@ import {
   type TemplateVariables,
 } from "./templates";
 
-import { sourceAnchor } from "./source-location";
-
 const DEFAULT_BUDGET = 12_000;
 const CHUNK_SIZE = 700;
 const MAX_RETRIEVED_SOURCES = 7;
@@ -114,13 +112,12 @@ function nearby(project: Project, note: Note): string {
   return page.text.slice(0, CHUNK_SIZE).trim();
 }
 
-function rootSources(note: Note): Source[] {
-  const fragments = note.anchor.fragments?.length ? note.anchor.fragments : [note.anchor];
-  return fragments.map((fragment, index) => ({
-    id: `S${index + 1}`, page: fragment.page,
-    rects: fragment.rects.map((rect) => [...rect]),
-    text: fragment.quote.trim() || "（选中的 PDF 区域，参见提问附图）",
-  }));
+function rootSource(note: Note): Source {
+  return {
+    id: "S1", page: note.anchor.page,
+    rects: note.anchor.rects.map((rect) => [...rect]),
+    text: note.anchor.quote.trim() || "（选中的 PDF 区域，参见提问附图）",
+  };
 }
 
 function retrieve(
@@ -265,7 +262,7 @@ export function buildContext(input: BuildContextInput): ContextResult {
   const budget = Math.max(1, input.budget ?? DEFAULT_BUDGET);
   const coverage = pageCoverage(input.project);
   const near = nearby(input.project, input.note);
-  const fixedSources = rootSources(input.note);
+  const fixedSource = rootSource(input.note);
   const candidates = [
     ...(near && near !== input.note.anchor.quote.trim() ? [{ page: input.note.anchor.page, text: near, score: Infinity, order: -1 }] : []),
     ...retrieve(input.project, input.note, input.question).filter((chunk) => chunk.page !== input.note.anchor.page || chunk.text !== near),
@@ -280,12 +277,11 @@ export function buildContext(input: BuildContextInput): ContextResult {
   let historyStart = 0;
 
   const makeSources = (count: number): Source[] => [
-    ...fixedSources,
+    fixedSource,
     ...candidates.slice(0, count).map((candidate, index) => ({
-      id: `S${index + fixedSources.length + 1}`,
+      id: `S${index + 2}`,
       page: candidate.page,
       text: candidate.text,
-      rects: sourceAnchor({ id: "", page: candidate.page, text: candidate.text }, input.project.pages.find((page) => page.page === candidate.page))?.rects,
     })),
   ];
 

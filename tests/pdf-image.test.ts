@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("pdfjs-dist", () => ({ GlobalWorkerOptions: {} }));
-import { renderAnchorImage, renderImage, type PDFDocumentProxy, type PDFPageProxy } from "../src/pdf";
+import { renderImage, type PDFPageProxy } from "../src/pdf";
 import { MAX_CANVAS_PIXELS, MAX_CANVAS_SIDE } from "../src/core/pdf-reader";
 function fixture(width = 600, height = 800, fail = false) {
   const canvases: { width: number; height: number; getContext: () => object; toBlob: (callback: (blob: Blob) => void) => void }[] = [];
@@ -41,22 +41,5 @@ describe("bounded PDF source images", () => {
     const {page,canvases}=fixture(600,800,true);
     await expect(renderImage(page,[10,10,110,20])).rejects.toThrow("cancelled");
     expect(canvases[0].width*canvases[0].height).toBe(0);
-  });
-  it("composites every selected page in order and releases each decoded crop", async () => {
-    const {page,canvases} = fixture();
-    const drawImage = vi.fn(), fillRect = vi.fn(), closed: number[] = [];
-    const context = {fillRect,drawImage,fillStyle:""};
-    const createElement = document.createElement;
-    vi.stubGlobal("document", {createElement: () => {const canvas = createElement.call(document, "canvas") as HTMLCanvasElement; canvas.getContext = (() => context) as unknown as typeof canvas.getContext; return canvas;}});
-    let index = 0;
-    vi.stubGlobal("createImageBitmap", async () => {const id = ++index; return {id,close: () => closed.push(id)};});
-    const getPage = vi.fn(async () => page);
-    await renderAnchorImage({getPage} as unknown as PDFDocumentProxy, {page:1,quote:"first\nsecond",rects:[[10,10,110,20]],fragments:[
-      {page:1,quote:"first",rects:[[10,10,110,20]]}, {page:2,quote:"second",rects:[[10,20,110,60]]},
-    ]});
-    expect(drawImage.mock.calls.map((call) => call.slice(1))).toEqual([[0,0,200,20],[0,20,200,80]]);
-    expect(closed).toEqual([1,2]);
-    expect(fillRect).toHaveBeenCalledWith(0,0,200,100);
-    expect(canvases.every((canvas) => canvas.width * canvas.height === 0)).toBe(true);
   });
 });

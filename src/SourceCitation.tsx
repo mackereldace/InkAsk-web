@@ -48,8 +48,8 @@ export default function SourceCitation({ source, preview, onLocate }: { source: 
   return <><button ref={button} className="source-link" aria-label={`原文引用 ${source.id}，第 ${source.page} 页`} aria-expanded={open} onPointerEnter={enter} onPointerLeave={leave} onFocus={enter} onBlur={leave}
     onClick={enter} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>[{source.id}]</button>
     {open && typeof document !== "undefined" && createPortal(<div ref={panel} className="source-popover" role="dialog" aria-label="原文引用预览" style={{ left: position?.left ?? 0, top: position?.top ?? 0, width: position?.width ?? 440, maxHeight: position?.maxHeight, visibility: position ? "visible" : "hidden" }} onPointerEnter={enter} onPointerLeave={leave} onFocusCapture={enter} onBlurCapture={leave}>
-      <header><strong>原文段落 · 第 {source.page} 页</strong><button aria-label="关闭引用预览" onClick={() => setOpen(false)}><X size={15} /></button></header>
+      <header><strong>原文 · 第 {source.page} 页</strong><button aria-label="关闭引用预览" onClick={() => setOpen(false)}><X size={15} /></button></header>
       {loading && !url ? <div className="source-preview-loading"><Loader2 size={15} className="spin" />正在截取对应原文…</div> : url ? <img className="source-preview-image" src={url} alt={`第 ${source.page} 页对应原文截图`} /> : <div className="source-quote"><MathText>{source.text}</MathText></div>}
-      <footer><span>{!loading && !result?.anchor?.rects.length && !source.rects?.length ? "暂未匹配到段落位置，显示文字摘录" : "悬停或点击查看对应段落"}</span><button onClick={() => { onLocate({ ...source, ...(result?.anchor ? { rects: result.anchor.rects } : {}) }); setOpen(false); }}>{result?.anchor?.rects.length || source.rects?.length ? "定位这段原文" : "前往此页"}<ArrowUpRight size={13} /></button></footer>
+      <footer><span>悬停或点击查看，不离开当前回答</span><button onClick={() => { onLocate({ ...source, ...(result?.anchor ? { rects: result.anchor.rects } : {}) }); setOpen(false); }}>定位原文<ArrowUpRight size={13} /></button></footer>
     </div>, document.body)}</>;
 }
