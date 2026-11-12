@@ -81,6 +81,7 @@ export function createBranch(
       page: note.anchor.page,
       rects: note.anchor.rects.map((rect) => [...rect]),
       quote: note.anchor.quote,
+      ...(note.anchor.fragments ? { fragments: note.anchor.fragments.map((fragment) => ({ ...fragment, rects: fragment.rects.map((rect) => [...rect]) })) } : {}),
     },
     parentId: note.id,
     parentMessageId,

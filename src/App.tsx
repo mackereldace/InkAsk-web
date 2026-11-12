@@ -27,7 +27,7 @@ import {
 import {
   openPdf,
   extractPage,
-  renderImage, screenRect,
+  renderImage, renderAnchorImage, screenRect,
   type PageViewport,
   type PDFDocumentProxy,
 } from "./pdf";
@@ -35,6 +35,7 @@ import ContinuousPdf from "./ContinuousPdf";
 import AnswerReader from "./AnswerReader";
 import Library from "./Library";
 import SelectionPopover from "./SelectionPopover";
+import { nativeSelectionFocus, rangeFocusBox, useSelectionGesture } from "./useSelectionGesture";
 import type { SourcePreviewResult } from "./SourceCitation";
 import { sourceAnchor, unionRects } from "./core/source-location";
 import { answerAnchorRange } from "./core/answer-selection";
@@ -105,13 +106,13 @@ export default function App() {
     [saveFailed, setSaveFailed] = useState(false);
   const [selection, setSelection] = useState<Anchor>(),
     [citationAnchor, setCitationAnchor] = useState<Anchor>(),
-    [selectionViewport, setSelectionViewport] = useState<PageViewport>(),
+    [selectionViewport, setSelectionViewport] = useState<{ page: number; viewport: PageViewport }>(),
     [draftId, setDraftId] = useState<string>(),
     [region, setRegion] = useState(false),
     [activeId, setActiveId] = useState<string>(),
     [focusId, setFocusId] = useState<string>(),
     [readingMessageId, setReadingMessageId] = useState<string>(),
-    [answerSelection, setAnswerSelection] = useState<{ noteId: string; messageId: string; quote: string; anchor: AnswerAnchor }>(),
+    [answerSelection, setAnswerSelection] = useState<{ noteId: string; messageId: string; quote: string; anchor: AnswerAnchor; focusAtStart?: boolean }>(),
     [navigation, setNavigation] = useState(0),
     [ocr, setOcr] = useState<number | null>(null),
     [busyIds, setBusyIds] = useState(new Set<string>()),
@@ -138,6 +139,7 @@ export default function App() {
     sourcePreviews = useRef(new Map<string, Promise<SourcePreviewResult | undefined>>()),
     sourceQueue = useRef(Promise.resolve()),
     selectionEpoch = useRef(0),
+    selectionFocusAtStart = useRef(false),
     pendingZoom = useRef<{ top: number; left: number; x: number; y: number; ratio: number } | undefined>(undefined),
     ocrEpoch = useRef(0),
     pdfOwned = useRef(new Set<PDFDocumentProxy>()),
@@ -145,14 +147,15 @@ export default function App() {
     readingView = useRef<ReadingTarget | undefined>(undefined),
     positions = useRef(new Map<string, { top: number; left: number; page?: number; pageOffset?: number }>()),
     pdfPageSizes = useRef(new Map<number, { width: number; height: number }>()),
-    pendingNavigation = useRef<{ key: string; page?: number } | undefined>(undefined);
+    pendingNavigation = useRef<{ key: string; page?: number; anchor?: Anchor } | undefined>(undefined);
+  const selectionGesture = useSelectionGesture(reader);
   function viewKey(target?: ReadingTarget) {
     const note = projectRef.current?.notes.find((n) => n.id === target?.noteId);
     return note ? `${note.id}:${answerFor(note, target?.messageId)?.id ?? "draft"}` : "pdf";
   }
-  function clearSelection() {
+  function clearSelection(clearNative = true) {
     selectionEpoch.current++; setSelection(undefined); setAnswerSelection(undefined); setCitationAnchor(undefined); setDraftId(undefined);
-    window.getSelection()?.removeAllRanges();
+    if (clearNative) window.getSelection()?.removeAllRanges();
   }
   function rememberPosition() {
     const root = reader.current;
@@ -166,11 +169,11 @@ export default function App() {
       });
     }
   }
-  function navigate(target?: ReadingTarget, page?: number) {
+  function navigate(target?: ReadingTarget, page?: number, anchor?: Anchor) {
     rememberPosition();
     setLibraryVisible(false); setSidebarOpen(false);
     readingView.current = target;
-    pendingNavigation.current = { key: viewKey(target), page };
+    pendingNavigation.current = { key: viewKey(target), page, anchor };
     setFocusId(target?.noteId);
     setReadingMessageId(target?.messageId);
     clearSelection();
@@ -198,6 +201,28 @@ export default function App() {
         if (projectRef.current?.view.direction === "horizontal") root.scrollLeft += sheet.getBoundingClientRect().left - root.getBoundingClientRect().left + offset;
         else root.scrollTop += sheet.getBoundingClientRect().top - root.getBoundingClientRect().top + offset;
       }
+    }
+    if (pending.anchor && pdfRef.current && projectRef.current) {
+      const anchor = pending.anchor, document = pdfRef.current, view = projectRef.current.view;
+      let cancelled = false, frame = 0;
+      void document.getPage(anchor.page).then((page) => {
+        if (cancelled) return;
+        const viewport = page.getViewport({ scale: view.scale, rotation: (page.rotate + view.rotation) % 360 });
+        // Wait for the destination sheet to mount, then use paragraph coordinates,
+        // including both scroll axes and PDF rotation, rather than the page top.
+        frame = requestAnimationFrame(() => {
+          if (cancelled) return;
+          const sheet = root.querySelector<HTMLElement>(`[data-pdf-page="${anchor.page}"] .pdf-sheet-content`);
+          const rect = anchor.rects[0] && screenRect(viewport, anchor.rects[0]);
+          if (!sheet || !rect) return;
+          const bounds = root.getBoundingClientRect(), origin = sheet.getBoundingClientRect();
+          root.scrollTop += origin.top + rect[1] - bounds.top - Math.min(64, bounds.height * .15);
+          const left = origin.left + rect[0], right = origin.left + rect[2];
+          if (view.direction === "horizontal" || left < bounds.left || right > bounds.right)
+            root.scrollLeft += left - bounds.left - 24;
+        });
+      }).catch(() => {});
+      return () => { cancelled = true; cancelAnimationFrame(frame); };
     }
   }, [navigation, project?.document.id, project?.view.direction]);
   const update = useCallback((fn: (p: Project) => void, noteScope?: string | null) => {
@@ -465,9 +490,9 @@ export default function App() {
     if (!existing && !pending) {
       pending = (async () => {
         const rect = note.anchor.rects.reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] as Anchor["rects"][0]);
-        const { blob } = await renderImage(await d.getPage(note.anchor.page), rect, p.view.rotation);
+        const blob = await renderAnchorImage(d, note.anchor, p.view.rotation);
         if (projectRef.current?.document.id !== documentId || epoch !== openEpoch.current) return;
-        const asset: Asset = { id: uid(), name: `第 ${note.anchor.page} 页选区.png`, mime: "image/png", data: blob, source: { page: note.anchor.page, rect } };
+        const asset: Asset = { id: uid(), name: note.anchor.fragments?.length ? `第 ${note.anchor.fragments.map((part) => part.page).join("、")} 页选区.png` : `第 ${note.anchor.page} 页选区.png`, mime: "image/png", data: blob, source: { page: note.anchor.page, ...(note.anchor.fragments?.length ? {} : { rect }) } };
         update((project) => {
           const n = project.notes.find((n) => n.id === note.id);
           if (n) { project.assets.push(asset); n.sourceAssetId = asset.id; }
@@ -525,26 +550,37 @@ export default function App() {
     setAnswerSelection(undefined); setDraftId(undefined); setCitationAnchor(undefined); setSelection(anchor);
     const epoch = ++selectionEpoch.current, d = pdfRef.current, view = projectRef.current?.view;
     if (!d || !view) return;
-    void d.getPage(anchor.page).then((page) => {
-      if (epoch === selectionEpoch.current) setSelectionViewport(page.getViewport({ scale: view.scale, rotation: (page.rotate + view.rotation) % 360 }));
+    const native = window.getSelection(), range = native?.rangeCount ? native.getRangeAt(0) : undefined;
+    selectionFocusAtStart.current = !!range && native?.focusNode === range.startContainer && native.focusOffset === range.startOffset;
+    const focus = native?.focusNode;
+    const element = focus instanceof Element ? focus : focus?.parentElement;
+    const focusPage = Number(element?.closest<HTMLElement>("[data-pdf-page]")?.dataset.pdfPage) || anchor.page;
+    void d.getPage(focusPage).then((page) => {
+      if (epoch === selectionEpoch.current) setSelectionViewport({ page: focusPage, viewport: page.getViewport({ scale: view.scale, rotation: (page.rotate + view.rotation) % 360 }) });
     }).catch(() => {});
   }
   const selectionBounds = useCallback(() => {
     const root = reader.current;
     if (!root) return;
     if (draftId) return root.querySelector(".answer-document-heading")?.getBoundingClientRect();
+    if (selectionGesture.active && selectionGesture.point.current) return selectionGesture.point.current;
+    const nativeFocus = nativeSelectionFocus(root);
+    if (nativeFocus) return nativeFocus;
     if (selection && selectionViewport) {
-      const page = root.querySelector(`[data-pdf-page="${selection.page}"] .pdf-page`);
-      const rect = unionRects(selection.rects.map((rect) => screenRect(selectionViewport, rect)));
+      const fragment = selection.fragments?.find((part) => part.page === selectionViewport.page) ?? selection;
+      const page = root.querySelector(`[data-pdf-page="${fragment.page}"] .pdf-page`);
+      const rects = fragment.rects.map((rect) => screenRect(selectionViewport.viewport, rect));
+      const rect = selection.quote ? rects[selectionFocusAtStart.current ? 0 : rects.length - 1] : unionRects(rects);
       if (!page || !rect) return;
       const bounds = page.getBoundingClientRect();
       return { left: bounds.left + rect[0], top: bounds.top + rect[1], right: bounds.left + rect[2], bottom: bounds.top + rect[3] };
     }
     if (answerSelection) {
       const body = root.querySelector<HTMLElement>(".answer-body");
-      return body ? answerAnchorRange(body, answerSelection.anchor, answerSelection.quote)?.getBoundingClientRect() : undefined;
+      const range = body && answerAnchorRange(body, answerSelection.anchor, answerSelection.quote);
+      return range ? rangeFocusBox(range, answerSelection.focusAtStart) : undefined;
     }
-  }, [selection, selectionViewport, answerSelection, draftId]);
+  }, [selection, selectionViewport, answerSelection, draftId, selectionGesture.active, selectionGesture.session, selectionGesture.point]);
   const selectionBoundary = useCallback(() => {
     const root = reader.current?.getBoundingClientRect();
     const viewport = window.visualViewport;
@@ -574,8 +610,10 @@ export default function App() {
     return pending;
   }, []);
   function locateSource(source: Source) {
-    pageTo(source.page);
     const anchor = sourceAnchor(source, projectRef.current?.pages.find((page) => page.page === source.page));
+    const page = Math.max(1, Math.min(projectRef.current?.document.pageCount ?? 1, source.page));
+    updateView((p) => { p.view.page = page; });
+    navigate(undefined, page, anchor);
     setCitationAnchor(anchor);
   }
   function context(n: Note) {
@@ -846,7 +884,11 @@ export default function App() {
     const pointer = (event: PointerEvent) => {
       const target = event.target as Element;
       if (target.closest(".selection-popover,.source-popover,.source-link") || (settings && target.closest(".settings-modal,.modal-backdrop"))) return;
-      if (selection || answerSelection || draftId || citationAnchor) clearSelection();
+      // The browser has already established the next native anchor at pointerdown.
+      // Removing ranges here breaks Shift-extension and WebKit's drag selection.
+      if (target.closest(".textLayer,.ocr-layer,.answer-body")) {
+        if (!event.shiftKey && (selection || answerSelection || draftId || citationAnchor)) clearSelection(false);
+      } else if (selection || answerSelection || draftId || citationAnchor) clearSelection();
     };
     const keyboard = (event: KeyboardEvent) => {
       if (event.key === "Escape") { if (settings) { setSettings(false); return; } clearSelection(); setSidebarOpen(false); }
@@ -1145,16 +1187,16 @@ export default function App() {
                 onSend={(id, prompt) => void send(id, prompt)} onStop={(id) => controllers.current.get(id)?.abort()}
                 onRetry={(id) => void send(id, undefined, true)} onBranch={(note, message, anchor) => branch(note, message, anchor?.quote, "custom", anchor)} onDelete={removeNote}
                 onPage={pageTo} onPreviewSource={previewSource} onLocateSource={locateSource} onResume={(note) => { clearSelection(); setDraftId(note.id); }} selection={answerSelection?.anchor} onFocus={focus} onAttach={(id, files) => void attach(id, files)} onScreenshot={(note) => void screenshot(note)} onSourceImage={(note) => void screenshot(note, false)}
-                onSelect={(note, message, anchor) => { selectionEpoch.current++; setSelection(undefined); setDraftId(undefined); setAnswerSelection({ noteId: note.id, messageId: message.id, quote: anchor.quote, anchor }); }} onClearSelection={() => setAnswerSelection(undefined)}
+                onSelect={(note, message, anchor) => { selectionEpoch.current++; setSelection(undefined); setDraftId(undefined); const native = window.getSelection(), range = native?.rangeCount ? native.getRangeAt(0) : undefined; setAnswerSelection({ noteId: note.id, messageId: message.id, quote: anchor.quote, anchor, focusAtStart: !!range && native?.focusNode === range.startContainer && native.focusOffset === range.startOffset }); }} onClearSelection={() => setAnswerSelection(undefined)}
               /> : pdf && <ContinuousPdf pdf={pdf} project={project} scrollRoot={reader} pageSizes={pdfPageSizes.current} activeId={activeId} regionMode={region} direction={project.view.direction} selection={selection ?? citationAnchor}
                 onSelect={selectPdf} onFocus={focus} onError={setNotice}
                 onClearSelection={() => setSelection(undefined)}
                 onPageChange={(page) => { if (projectRef.current?.view.page !== page) updateView((p) => { p.view.page = page; }); }} />}
             </div>
-            {(selection || answerSelection || draftId) && <SelectionPopover key={draftId ?? JSON.stringify(selection ?? answerSelection?.anchor)}
+            {(selection || answerSelection || draftId) && <SelectionPopover key={draftId ?? `${focusId ?? "pdf"}:${selectionGesture.session}`}
               quote={selection?.quote ?? answerSelection?.quote ?? focused?.anchor.quote ?? ""} initialQuestion={draftId ? focused?.draft : undefined}
               imageOnly={!!selection && !selection.quote} cropAvailable={!answerSelection && (!draftId || !focused?.parentId)} apiReady={status.configured && !switching}
-              getAnchor={selectionBounds} boundary={selectionBoundary} onSubmit={submitSelection} onClose={clearSelection} onSettings={() => setSettings(true)} />}
+              selecting={selectionGesture.active} getAnchor={selectionBounds} boundary={selectionBoundary} onSubmit={submitSelection} onClose={() => clearSelection()} onSettings={() => setSettings(true)} />}
           </>
         )}
         <footer className="app-footer">

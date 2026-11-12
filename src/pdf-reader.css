@@ -14,3 +14,7 @@
 .pdf-selection-rect { position: absolute; pointer-events: none; }
 .pdf-selection-rect.text-selection { background: #b3cf7680; mix-blend-mode: multiply; }
 .pdf-selection-rect.area-selection { border: 2px solid #638445; background: #b7cf6b2e; box-shadow: 0 0 0 1px #fff9; }
+
+/* Keep PDF.js's native selection endpoint out of the page's absolute-positioned spans. */
+.textLayer.selecting .endOfContent { top: 0; }
+.textLayer .endOfContent { pointer-events: none; }

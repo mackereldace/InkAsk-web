@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import PdfPage from "./PdfPage";
 import type { PDFDocumentProxy } from "./pdf";
 import type { Anchor, Note, PageText, Project } from "./types";
+import { collectPdfSelection, guardTextLayerEnd, resetTextLayerEnd, selectionPages, type PdfSelectionPage } from "./core/pdf-selection";
 import { pageAtReadingPosition, type ReadingDirection } from "./core/pdf-reader";
 
 interface Props {
@@ -20,8 +21,9 @@ interface Props {
   onError: (message: string) => void;
 }
 
-function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, ...props }: Omit<Props, "onPageChange"> & {
-  page: number; text?: PageText; notes: Note[];
+function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, pinned, registerText, ...props }: Omit<Props, "onPageChange"> & {
+  page: number; text?: PageText; notes: Note[]; pinned: boolean;
+  registerText: (page: number, entry?: PdfSelectionPage) => void;
 }) {
   const section = useRef<HTMLElement>(null);
   const [near, setNear] = useState(page === project.view.page);
@@ -46,7 +48,8 @@ function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, ...prop
     <section ref={section} id={`pdf-sheet-${page}`} data-pdf-page={page}
       className="pdf-sheet" aria-label={`PDF 第 ${page} 页`} style={{ width: size.width }}>
       <div className="pdf-sheet-content" style={{ width: size.width, height: size.height }}>
-      {near ? <PdfPage pdf={pdf} page={page} scale={scale} rotation={rotation}
+      {near || pinned ? <PdfPage pdf={pdf} page={page} scale={scale} rotation={rotation}
+        renderCanvas={near} registerText={registerText}
         text={text} notes={notes} regionMode={props.regionMode} selection={props.selection} activeId={props.activeId}
         onSelect={props.onSelect} onFocus={props.onFocus} onError={props.onError}
         onSize={({ width, height }) => {
@@ -60,7 +63,69 @@ function Sheet({ pdf, page, text, notes, project, scrollRoot, pageSizes, ...prop
 }
 
 export default function ContinuousPdf(props: Props) {
+  const textPages = useRef(new Map<number, PdfSelectionPage>());
+  const [pinned, setPinned] = useState<number[]>([]);
+  const pinnedRef = useRef<number[]>([]);
+  const selectCallback = useRef(props.onSelect);
+  selectCallback.current = props.onSelect;
+  const regionMode = useRef(props.regionMode);
+  regionMode.current = props.regionMode;
+  const registerText = useCallback((page: number, entry?: PdfSelectionPage) => {
+    if (entry) textPages.current.set(page, entry); else textPages.current.delete(page);
+  }, []);
   const stack = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let pointerDown = false, previous: Range | undefined, lastSelection = "";
+    const pin = (pages: number[]) => {
+      if (pages.length === pinnedRef.current.length && pages.every((page, i) => page === pinnedRef.current[i])) return;
+      pinnedRef.current = pages; setPinned(pages);
+    };
+    const pageOf = (node: Node | null) => {
+      const element = node instanceof Element ? node : node?.parentElement;
+      const sheet = element?.closest<HTMLElement>("[data-pdf-page]");
+      return sheet && stack.current?.contains(sheet) ? Number(sheet.dataset.pdfPage) : undefined;
+    };
+    const reset = () => { for (const { layer } of textPages.current.values()) resetTextLayerEnd(layer); previous = undefined; };
+    const changed = () => {
+      if (regionMode.current) return;
+      const selection = document.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) {
+        // A click starts collapsed before the first selectionchange; retain its origin.
+        if (!pointerDown) { pin([]); reset(); lastSelection = ""; }
+        return;
+      }
+      const first = pageOf(selection.anchorNode), last = pageOf(selection.focusNode);
+      if (!first || !last) return;
+      pin(selectionPages(first, last));
+      const anchor = collectPdfSelection(selection, textPages.current.values());
+      if (anchor) {
+        const signature = JSON.stringify(anchor);
+        if (signature !== lastSelection) { lastSelection = signature; selectCallback.current(anchor); }
+      }
+      if (pointerDown) previous = guardTextLayerEnd(selection, textPages.current.values(), previous);
+    };
+    const down = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (event.button !== 0 || !target?.closest(".textLayer") || !stack.current?.contains(target)) return;
+      pointerDown = true;
+      if (!event.shiftKey) { lastSelection = ""; previous = undefined; }
+      const origin = pageOf(target);
+      if (origin) pin(event.shiftKey ? [...new Set([...pinnedRef.current, origin])].sort((a, b) => a - b) : [origin]);
+    };
+    const up = () => { changed(); pointerDown = false; reset(); };
+    const blur = () => { pointerDown = false; reset(); };
+    document.addEventListener("selectionchange", changed);
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up);
+    document.addEventListener("pointercancel", blur);
+    document.addEventListener("keyup", changed);
+    window.addEventListener("blur", blur);
+    return () => {
+      document.removeEventListener("selectionchange", changed); document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up); document.removeEventListener("pointercancel", blur);
+      document.removeEventListener("keyup", changed); window.removeEventListener("blur", blur); reset();
+    };
+  }, [props.pdf]);
   const onPageChange = useRef(props.onPageChange);
   onPageChange.current = props.onPageChange;
   useEffect(() => {
@@ -94,13 +159,16 @@ export default function ContinuousPdf(props: Props) {
     const byPage = new Map<number, Note[]>();
     for (const note of props.project.notes) {
       if (note.parentId) continue;
-      const group = byPage.get(note.anchor.page) ?? [];
-      group.push(note); byPage.set(note.anchor.page, group);
+      for (const page of note.anchor.fragments?.map((part) => part.page) ?? [note.anchor.page]) {
+        const group = byPage.get(page) ?? [];
+        group.push(note); byPage.set(page, group);
+      }
     }
     return byPage;
   }, [props.project.notes]);
   return <div ref={stack} className={"continuous-pdf direction-" + (props.direction ?? "vertical")} aria-label="PDF 连续阅读">
     {Array.from({ length: props.pdf.numPages }, (_, index) => <Sheet {...props} key={index + 1}
+      pinned={pinned.includes(index + 1)} registerText={registerText}
       page={index + 1} text={pages.get(index + 1)} notes={notes.get(index + 1) ?? []} />)}
   </div>;
 }

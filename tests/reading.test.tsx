@@ -34,6 +34,23 @@ function fixture(): Project {
 }
 
 describe("reading answers as nested documents", () => {
+  it("keeps cross-page selection coordinates through branching and archive round trips", async () => {
+    const p = fixture();
+    p.document.pdf = new Blob(["%PDF-1.4 fixture"], {type: "application/pdf"});
+    p.notes[0].anchor = {page: 2, quote: "End of page two\nStart of page three", rects: [[10, 20, 200, 40]], fragments: [
+      {page: 2, quote: "End of page two", rects: [[10, 20, 200, 40]]},
+      {page: 3, quote: "Start of page three", rects: [[15, 700, 220, 720]]},
+    ]};
+    const child = createBranch(p, p.notes[0], "a1", "follow up");
+    p.notes.push(child);
+    expect(child.anchor.fragments).toEqual(p.notes[0].anchor.fragments);
+    expect(child.anchor.fragments?.[0].rects[0]).not.toBe(p.notes[0].anchor.fragments![0].rects[0]);
+    const restored = await importProject(await exportProject(p));
+    expect(restored.notes[0].anchor).toEqual(p.notes[0].anchor);
+    expect(restored.notes[1].anchor.fragments).toEqual(p.notes[0].anchor.fragments);
+    p.notes[0].anchor.fragments![1].page = 4;
+    await expect(importProject(await exportProject(p))).rejects.toThrow(/page range/);
+  });
   it("returns to the exact parent answer and retains each level of the reading chain", () => {
     const p = fixture();
     const child = createBranch(p, p.notes[0], "a1", "选中的一句话");
