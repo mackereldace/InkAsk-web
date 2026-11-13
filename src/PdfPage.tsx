@@ -10,6 +10,8 @@ import type { Anchor, Note, PageText, Rect } from "./types";
 import AnnotationLayer from "./AnnotationLayer";
 import { MathText } from "./Markdown";
 import { startCanvasRender } from "./core/pdf-reader";
+import { registerTextLayerSelection, textSelectionRects } from "./core/text-layer-selection";
+import { registerBlankTextSelection } from "./core/text-selection-hit";
 interface Props {
   pdf: PDFDocumentProxy;
   page: number;
@@ -46,6 +48,7 @@ export default function PdfPage({
 }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null),
     layer = useRef<HTMLDivElement>(null),
+    ocrLayer = useRef<HTMLDivElement>(null),
     wrap = useRef<HTMLDivElement>(null);
   const [vp, setVp] = useState<PageViewport>(),
     [drag, setDrag] = useState<Rect>();
@@ -61,6 +64,7 @@ export default function PdfPage({
     const ownsDom = () => alive && canvas.current === el && layer.current === container && wrap.current === wrapper && el.isConnected && container.isConnected;
     let rendering: ReturnType<typeof startCanvasRender> | undefined;
     let textLayer: InstanceType<typeof pdfjs.TextLayer> | undefined;
+    let unregisterSelection: (() => void) | undefined;
     void (async () => {
       try {
         const pdfPage = await pdf.getPage(page);
@@ -79,16 +83,28 @@ export default function PdfPage({
         container.replaceChildren();
         textLayer = new pdfjs.TextLayer({ textContentSource: content, container, viewport });
         await textLayer.render();
+        if (ownsDom()) {
+          const releaseGuard = registerTextLayerSelection(container);
+          const releaseHit = registerBlankTextSelection(container, viewport.rotation % 180 !== 0);
+          unregisterSelection = () => { releaseHit(); releaseGuard(); };
+        }
       } catch (e) {
         if (ownsDom() && !(e instanceof Error && e.name === "RenderingCancelledException"))
           errorCallback.current("页面渲染失败：" + String(e));
       }
     })();
     return () => {
-      alive = false; rendering?.cancel(); textLayer?.cancel();
+      alive = false; unregisterSelection?.(); rendering?.cancel(); textLayer?.cancel();
       if (!el.isConnected) { el.width = 0; el.height = 0; }
     };
   }, [pdf, page, scale, rotation, text?.source]);
+  useEffect(() => {
+    if (vp && text?.source === "ocr" && ocrLayer.current) {
+      const releaseGuard = registerTextLayerSelection(ocrLayer.current);
+      const releaseHit = registerBlankTextSelection(ocrLayer.current, vp.rotation % 180 !== 0);
+      return () => { releaseHit(); releaseGuard(); };
+    }
+  }, [vp, text?.source, text?.words]);
   function selection() {
     if (regionMode || !vp) return;
     const s = window.getSelection();
@@ -98,7 +114,9 @@ export default function PdfPage({
     const quote = s.toString().trim();
     if (!quote) return;
     const bounds = wrap.current!.getBoundingClientRect();
-    const rects = Array.from(range.getClientRects())
+    const textRoot = text?.source === "ocr" ? ocrLayer.current : layer.current;
+    if (!textRoot) return;
+    const rects = textSelectionRects(range, textRoot)
       .filter((r) => r.width > 1 && r.height > 1)
       .map((r) =>
         normalizeRect([
@@ -139,6 +157,7 @@ export default function PdfPage({
       />
       {text?.source === "ocr" && (
         <div
+          ref={ocrLayer}
           className="textLayer ocr-text"
           style={{ pointerEvents: regionMode ? "none" : undefined }}
         >

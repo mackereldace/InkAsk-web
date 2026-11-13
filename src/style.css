@@ -810,7 +810,11 @@ button:hover {
   inset: 100% 0 0;
   z-index: 0;
   cursor: default;
+  -webkit-user-select: none;
   user-select: none;
+}
+.textLayer.selecting .endOfContent {
+  top: 0;
 }
 .textLayer .ocr-word {
   display: inline-block;
