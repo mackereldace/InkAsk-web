@@ -2,7 +2,6 @@ import type {
   ContextResult,
   HistoryMessage,
   Note,
-  PageText,
   Project,
   PromptTemplate,
   Source,
@@ -14,11 +13,9 @@ import {
   type TemplateVariable,
   type TemplateVariables,
 } from "./templates";
-import { sourceAnchor } from "./source-location";
+import { selectEvidence } from "./evidence-retrieval";
 
 const DEFAULT_BUDGET = 12_000;
-const CHUNK_SIZE = 700;
-const MAX_RETRIEVED_SOURCES = 7;
 const MAX_HISTORY_MESSAGES = 40;
 const MAX_IMAGE_ATTACHMENTS = 20;
 const APPROX_CHARS_PER_IMAGE = 2_000;
@@ -29,42 +26,6 @@ interface BuildContextInput {
   question: string;
   template: PromptTemplate;
   budget?: number;
-}
-
-interface ScoredChunk {
-  page: number;
-  text: string;
-  score: number;
-  order: number;
-}
-
-function words(value: string): string[] {
-  const normalized = value.toLocaleLowerCase();
-  const latin = normalized.match(/[a-z0-9][a-z0-9_-]*/g) ?? [];
-  const han = normalized.match(/[\u3400-\u9fff]+/g) ?? [];
-  const bigrams = han.flatMap((run) =>
-    run.length < 2
-      ? [run]
-      : Array.from({ length: run.length - 1 }, (_, i) => run.slice(i, i + 2)),
-  );
-  return [...latin, ...bigrams];
-}
-
-function chunks(page: PageText): string[] {
-  const text = page.text.trim();
-  if (!text) return [];
-
-  const paragraphs = text
-    .split(/\n\s*\n/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const output: string[] = [];
-  for (const paragraph of paragraphs.length ? paragraphs : [text]) {
-    for (let offset = 0; offset < paragraph.length; offset += CHUNK_SIZE) {
-      output.push(paragraph.slice(offset, offset + CHUNK_SIZE));
-    }
-  }
-  return output;
 }
 
 function pageCoverage(project: Project): string {
@@ -99,60 +60,12 @@ function pageCoverage(project: Project): string {
   return `已可检索 ${ready}/${total} 页${detail.length ? `；${detail.join("；")}` : ""}。`;
 }
 
-function nearby(project: Project, note: Note): string {
-  const page = project.pages.find(
-    (candidate) => candidate.page === note.anchor.page,
-  );
-  if (!page?.text.trim()) return "";
-  const selected = note.anchor.quote.trim();
-  const at = selected ? page.text.indexOf(selected) : -1;
-  if (at >= 0) {
-    const start = Math.max(0, at - CHUNK_SIZE / 2);
-    return page.text.slice(start, start + CHUNK_SIZE * 2).trim();
-  }
-  return page.text.slice(0, CHUNK_SIZE).trim();
-}
-
 function rootSource(note: Note): Source {
   return {
     id: "S1", page: note.anchor.page,
     rects: note.anchor.rects.map((rect) => [...rect]),
     text: note.anchor.quote.trim() || "（选中的 PDF 区域，参见提问附图）",
   };
-}
-
-function retrieve(
-  project: Project,
-  note: Note,
-  question: string,
-): ScoredChunk[] {
-  const query = words(`${note.anchor.quote}\n${note.branchQuote ?? ""}\n${question}`);
-  const terms = new Set(query);
-  if (!terms.size) return [];
-
-  const scored: ScoredChunk[] = [];
-  let order = 0;
-  for (const page of project.pages) {
-    if (page.status !== "ready" || !page.text.trim()) continue;
-    for (const text of chunks(page)) {
-      const candidate = new Set(words(text));
-      let score = 0;
-      for (const term of terms) if (candidate.has(term)) score += 1;
-      if (page.page === note.anchor.page) score += 1;
-      if (score > 1) scored.push({ page: page.page, text, score, order });
-      order += 1;
-    }
-  }
-
-  scored.sort((a, b) => b.score - a.score || a.order - b.order);
-  const seen = new Set<string>();
-  return scored.filter((chunk) => {
-    const key = `${chunk.page}:${chunk.text}`;
-    const selectedChunk = note.anchor.quote.trim();
-    if (seen.has(key) || chunk.text === selectedChunk) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 function currentHistory(note: Note): HistoryMessage[] {
@@ -173,7 +86,7 @@ function currentHistory(note: Note): HistoryMessage[] {
 
 function sourceSection(sources: Source[]): string {
   return sources
-    .map((source) => `[${source.id}] 第 ${source.page} 页\n${source.text}`)
+    .map((source) => `[${source.id}] 第 ${source.page} 页${source.label ? ` · ${source.label}` : ""}\n${source.text}`)
     .join("\n\n");
 }
 
@@ -262,12 +175,8 @@ function renderPrompt(
 export function buildContext(input: BuildContextInput): ContextResult {
   const budget = Math.max(1, input.budget ?? DEFAULT_BUDGET);
   const coverage = pageCoverage(input.project);
-  const near = nearby(input.project, input.note);
   const fixedSource = rootSource(input.note);
-  const candidates = [
-    ...(near && near !== input.note.anchor.quote.trim() ? [{ page: input.note.anchor.page, text: near, score: Infinity, order: -1 }] : []),
-    ...retrieve(input.project, input.note, input.question).filter((chunk) => chunk.page !== input.note.anchor.page || chunk.text !== near),
-  ].slice(0, MAX_RETRIEVED_SOURCES);
+  const candidates = selectEvidence(input.project, input.note, input.question);
   const allHistory = currentHistory(input.note);
   const history = allHistory.slice(-MAX_HISTORY_MESSAGES);
   const initialImages = imageOccurrences(input.note, history);
@@ -283,7 +192,10 @@ export function buildContext(input: BuildContextInput): ContextResult {
       id: `S${index + 2}`,
       page: candidate.page,
       text: candidate.text,
-      rects: sourceAnchor({ id: "", page: candidate.page, text: candidate.text }, input.project.pages.find((page) => page.page === candidate.page))?.rects,
+      ...(candidate.rects.length ? { rects: candidate.rects.map((rect) => [...rect] as typeof rect) } : {}),
+      blockId: candidate.id,
+      label: candidate.label,
+      textRange: [candidate.start, candidate.end] as [number, number],
     })),
   ];
 

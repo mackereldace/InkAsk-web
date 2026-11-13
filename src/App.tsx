@@ -37,6 +37,7 @@ import Library from "./Library";
 import SelectionPopover from "./SelectionPopover";
 import type { SourcePreviewResult } from "./SourceCitation";
 import { sourceAnchor, unionRects } from "./core/source-location";
+import { sourceEvidencePreview } from "./core/source-preview";
 import { answerAnchorRange } from "./core/answer-selection";
 import "./pdf-reader.css";
 import "./reader-interactions.css";
@@ -135,7 +136,7 @@ export default function App() {
     openRequest = useRef(0),
     switchLocks = useRef(new Set<number>()),
     captures = useRef(new Map<string, Promise<Asset | undefined>>()),
-    sourcePreviews = useRef(new Map<string, Promise<SourcePreviewResult | undefined>>()),
+    sourcePreviews = useRef(new Map<string, Promise<Blob>>()),
     sourceQueue = useRef(Promise.resolve()),
     selectionEpoch = useRef(0),
     pendingZoom = useRef<{ top: number; left: number; x: number; y: number; ratio: number } | undefined>(undefined),
@@ -571,27 +572,35 @@ export default function App() {
     const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
     return { left: Math.max(left, root?.left ?? left), top: Math.max(top, root?.top ?? top), right: Math.min(left + (viewport?.width ?? window.innerWidth), root?.right ?? window.innerWidth), bottom: Math.min(top + (viewport?.height ?? window.innerHeight), root?.bottom ?? window.innerHeight) };
   }, []);
-  const previewSource = useCallback(async (source: Source): Promise<SourcePreviewResult | undefined> => {
+  const previewSource = useCallback(async (source: Source, claim?: string): Promise<SourcePreviewResult | undefined> => {
     const p = projectRef.current, d = pdfRef.current;
     if (!p || !d) return;
-    const anchor = sourceAnchor(source, p.pages.find((page) => page.page === source.page));
-    const rect = anchor && unionRects(anchor.rects);
-    if (!anchor || !rect) return;
-    const key = JSON.stringify([p.document.id, source.page, rect, p.view.rotation]);
-    const cached = sourcePreviews.current.get(key);
-    if (cached) { sourcePreviews.current.delete(key); sourcePreviews.current.set(key, cached); return cached; }
     const epoch = openEpoch.current;
-    const pending = sourceQueue.current.catch(() => {}).then(async () => {
+    const resolution = sourceEvidencePreview(source, p.pages.find((page) => page.page === source.page), claim);
+    const parts = [];
+    for (const part of resolution.parts) {
+      const rect = part.anchor && unionRects(part.anchor.rects);
+      if (!rect) { parts.push(part); continue; }
+      const crop: Anchor["rects"][number] = [rect[0] - 3, rect[1] - 3, rect[2] + 3, rect[3] + 3];
+      const key = JSON.stringify([p.document.id, source.page, crop, p.view.rotation]);
+      let image = sourcePreviews.current.get(key);
+      if (image) { sourcePreviews.current.delete(key); sourcePreviews.current.set(key, image); }
+      else {
+        image = sourceQueue.current.catch(() => {}).then(async () => {
+          if (epoch !== openEpoch.current) throw new Error("资料已切换");
+          return (await renderImage(await d.getPage(source.page), crop, p.view.rotation)).blob;
+        });
+        sourceQueue.current = image.then(() => {}, () => {});
+        sourcePreviews.current.set(key, image);
+        while (sourcePreviews.current.size > 12) sourcePreviews.current.delete(sourcePreviews.current.keys().next().value!);
+        void image.catch(() => sourcePreviews.current.delete(key));
+      }
+      const blob = await image;
       if (epoch !== openEpoch.current) return;
-      const { blob } = await renderImage(await d.getPage(source.page), rect, p.view.rotation);
-      if (epoch !== openEpoch.current) return;
-      return { blob, anchor };
-    });
-    sourceQueue.current = pending.then(() => {}, () => {});
-    sourcePreviews.current.set(key, pending);
-    while (sourcePreviews.current.size > 12) sourcePreviews.current.delete(sourcePreviews.current.keys().next().value!);
-    void pending.catch(() => sourcePreviews.current.delete(key));
-    return pending;
+      // Only raster bytes are shared; each source retains its own exact anchors.
+      parts.push({ ...part, blob });
+    }
+    return { parts, kind: resolution.kind };
   }, []);
   function locateSource(source: Source) {
     const anchor = sourceAnchor(source, projectRef.current?.pages.find((page) => page.page === source.page));

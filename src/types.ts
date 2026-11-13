@@ -24,6 +24,10 @@ export interface Source {
   id: string;
   page: number;
   text: string;
+  /** Evidence metadata is optional so existing answers keep their original sources. */
+  blockId?: string;
+  label?: string;
+  textRange?: [number, number];
 }
 export interface Asset {
   id: string;

@@ -554,6 +554,13 @@ function validateManifest(value: unknown): asserts value is Manifest {
           assertString(source.id, "source.id");
           assertString(source.text, "source.text");
           assertNumber(source.page, "source.page");
+          if (source.blockId !== undefined) assertString(source.blockId, "source.blockId");
+          if (source.label !== undefined) assertString(source.label, "source.label");
+          if (source.textRange !== undefined) {
+            assertArray(source.textRange, "source.textRange");
+            if (source.textRange.length !== 2 || !source.textRange.every((value) => typeof value === "number" && Number.isInteger(value) && value >= 0) || (source.textRange[1] as number) <= (source.textRange[0] as number))
+              throw new Error("Invalid evidence text range.");
+          }
           if (source.rects !== undefined) {
             assertArray(source.rects, "source.rects");
             source.rects.forEach((rect) => assertRect(rect, "source.rect"));

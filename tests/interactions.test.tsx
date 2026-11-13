@@ -31,8 +31,10 @@ describe("selection and citation interactions", () => {
   it("backs up source coordinates and reading direction without requiring them in old archives", async () => {
     const project: Project = {version:1,document:{id:"p",name:"p.pdf",fingerprint:"p",pdf:new Blob(["%PDF-1.4 test"]),pageCount:1,createdAt:1,updatedAt:1},pages:[page],assets:[],templates:[],view:{page:1,scale:1,rotation:0,direction:"horizontal"},notes:[{id:"n",title:"n",anchor:{page:1,quote:"a",rects:[[0,0,1,1]]},inheritedHistory:[],collapsed:false,task:"explain",templateId:"t",draft:"",draftAssetIds:[],createdAt:1,messages:[{id:"a",role:"assistant",content:"[S1]",assetIds:[],status:"complete",createdAt:1,sources:[{id:"S1",page:1,text:"a",rects:[[2,3,4,5]]}]}]}]};
     project.templates=[{id:"t",name:"explain",task:"explain",body:"test",version:1}];
+    Object.assign(project.notes[0].messages[0].sources![0], {blockId:"p1:version:0-1",label:"题设",textRange:[0,1]});
     const restored=await importProject(await exportProject(project));
     expect(restored.view.direction).toBe("horizontal");
     expect(restored.notes[0].messages[0].sources?.[0].rects).toEqual([[2,3,4,5]]);
+    expect(restored.notes[0].messages[0].sources?.[0]).toMatchObject({blockId:"p1:version:0-1",label:"题设",textRange:[0,1]});
   });
 });

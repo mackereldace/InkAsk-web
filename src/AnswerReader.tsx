@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Copy, GitBranch, RotateCcw, Square, Trash2 } from "lucide-react";
 import { AssetImage, Markdown, MathText } from "./Markdown";
 import AnnotationLayer, { type ReadingAnnotation } from "./AnnotationLayer";
 import { answerText, answerAnchorRange, answerRangeRects, selectedAnswerAnchor } from "./core/answer-selection";
 import { answerFor } from "./core/reading";
 import { sourceForAnchor } from "./core/source-location";
+import { prepareCitationMarkdown } from "./core/citation-markdown";
 import type { PreviewSource } from "./SourceCitation";
 import type { AnswerAnchor, ContextResult, Message, Note, Project, Rect, Source } from "./types";
 
@@ -44,8 +45,11 @@ export default function AnswerReader(props: Props) {
   const question = answer ? note.messages.slice(0, note.messages.indexOf(answer)).reverse().find((m) => m.role === "user") : undefined;
   const children = answer ? project.notes.filter((n) => n.parentId === note.id && n.parentMessageId === answer.id) : [];
   const parentMessage = project.notes.find((n) => n.id === note.parentId)?.messages.find((m) => m.id === note.parentMessageId);
-  const previewSource: PreviewSource | undefined = props.onPreviewSource ? (source) => props.onPreviewSource!(sourceForAnchor(source, note.anchor)) : undefined;
+  const previewSource: PreviewSource | undefined = props.onPreviewSource ? (source, claim) => props.onPreviewSource!(sourceForAnchor(source, note.anchor), `${claim ?? ""}\n${note.anchor.quote}`) : undefined;
   const locateSource = props.onLocateSource ? (source: Source) => props.onLocateSource!(sourceForAnchor(source, note.anchor)) : undefined;
+  const citedIds = useMemo(() => prepareCitationMarkdown(answer?.content ?? "", answer?.sources).citedIds, [answer?.content, answer?.sources]);
+  const citedSources = answer?.sources?.filter((source) => citedIds.has(source.id)) ?? [];
+  const sourceList = (sources: Source[]) => sources.map((source) => `[${source.id}] 第 ${source.page} 页${source.label ? ` · ${source.label}` : ""}`).join("\n\n");
   const annotationKey = JSON.stringify(children.map((child) => [child.id, child.title, child.branchQuote, child.answerAnchor]));
   useLayoutEffect(() => {
     const root = body.current, wrapper = surface.current;
@@ -139,9 +143,12 @@ export default function AnswerReader(props: Props) {
         </>}
         {answer.prompt && <details><summary>提问记录</summary><pre>{answer.prompt}</pre></details>}
       </div>
-      {!!answer.sources?.length && <details className="answer-sources"><summary>本次参考来源 · {[...new Set(answer.sources.map((source) => source.page))].length} 页</summary>
-        <p>这些片段是本次提供给模型的相关原文；悬停引用编号可查看对应截图。</p>
-        <div className="message-body"><Markdown message={{ content: answer.sources.map((source) => `[${source.id}] 第 ${source.page} 页`).join(" · "), sources: answer.sources }} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} /></div>
+      {!!answer.sources?.length && <details className="answer-sources"><summary>回答引用 · {citedSources.length} 项原文 · {new Set(citedSources.map((source) => source.page)).size} 页</summary>
+        <p>这里列出回答实际使用的来源；同一编号在正文中重复出现只计一次。</p>
+        <div className="message-body"><Markdown message={{ content: sourceList(citedSources), sources: answer.sources }} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} /></div>
+        <details><summary>本次提供的材料 · {answer.sources.length} 个片段 · {new Set(answer.sources.map((source) => source.page)).size} 页</summary>
+          <div className="message-body"><Markdown message={{ content: sourceList(answer.sources), sources: answer.sources }} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} /></div>
+        </details>
       </details>}
       <p className="answer-reading-hint">选中回答里的文字，继续进入下一层提问。</p>
     </> : <div className="legacy-draft">

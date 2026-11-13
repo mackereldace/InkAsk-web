@@ -7,6 +7,8 @@ import { X } from "lucide-react";
 import SourceCitation, { type PreviewSource } from "./SourceCitation";
 import type { Asset, Message, Project, Source } from "./types";
 import { normalizeMathMarkdown } from "./core/math-markdown";
+import { citationClaimText } from "./core/citation-claim";
+import { prepareCitationMarkdown } from "./core/citation-markdown";
 
 export function MathText({ children }: { children: string }) {
   return <span className="math-text"><ReactMarkdown
@@ -56,6 +58,10 @@ interface RenderContext {
   onLocateSource?: (source: Source) => void;
 }
 const MarkdownContext = createContext<RenderContext>({ assets: [], onPage: () => {} });
+const CitationClaimContext = createContext("");
+const MarkdownParagraph: Components["p"] = ({ node, children, ...props }) => <CitationClaimContext.Provider value={citationClaimText(node)}><p {...props}>{children}</p></CitationClaimContext.Provider>;
+const MarkdownListItem: Components["li"] = ({ node, children, ...props }) => <CitationClaimContext.Provider value={citationClaimText(node)}><li {...props}>{children}</li></CitationClaimContext.Provider>;
+const MarkdownCell: Components["td"] = ({ node, children, ...props }) => <CitationClaimContext.Provider value={citationClaimText(node)}><td {...props}>{children}</td></CitationClaimContext.Provider>;
 
 function MarkdownImage({ src, alt }: ComponentProps<"img">) {
   const { assets } = useContext(MarkdownContext);
@@ -64,14 +70,15 @@ function MarkdownImage({ src, alt }: ComponentProps<"img">) {
 }
 function MarkdownLink({ href, children }: ComponentProps<"a">) {
   const { sources, onPage, onPreviewSource, onLocateSource } = useContext(MarkdownContext);
+  const claim = useContext(CitationClaimContext);
   if (href?.startsWith("#source-")) {
     const source = sources?.find((item) => item.id === href.slice(8));
-    return source ? <SourceCitation source={source} preview={onPreviewSource} onLocate={onLocateSource ?? ((source) => onPage(source.page))} /> : <span>{children}</span>;
+    return source ? <SourceCitation source={source} claim={claim} preview={onPreviewSource} onLocate={onLocateSource ?? ((source) => onPage(source.page))} /> : <span>{children}</span>;
   }
   return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
 }
 // Stable component identities keep image effects and Blob URLs mounted across measurements.
-const MARKDOWN_COMPONENTS: Components = { img: MarkdownImage, a: MarkdownLink };
+const MARKDOWN_COMPONENTS: Components = { img: MarkdownImage, a: MarkdownLink, p: MarkdownParagraph, li: MarkdownListItem, td: MarkdownCell };
 export function Markdown({ message, project, onPage, onPreviewSource, onLocateSource }: {
   message: Pick<Message, "content" | "sources">;
   project: Project;
@@ -80,12 +87,11 @@ export function Markdown({ message, project, onPage, onPreviewSource, onLocateSo
   onLocateSource?: (source: Source) => void;
 }) {
   const context = useMemo(() => ({ assets: project.assets, sources: message.sources, onPage, onPreviewSource, onLocateSource }), [project.assets, message.sources, onPage, onPreviewSource, onLocateSource]);
-  const content = message.content.replace(/(?<!\[)\[([S]\d+)\](?!\()/g, (all, id: string) =>
-    message.sources?.some((source) => source.id === id) ? `[${id}](#source-${id})` : all);
+  const prepared = useMemo(() => prepareCitationMarkdown(message.content, message.sources), [message.content, message.sources]);
   return <MarkdownContext.Provider value={context}><ReactMarkdown
     remarkPlugins={[remarkGfm, remarkMath]}
     rehypePlugins={[[rehypeKatex, { throwOnError: false, trust: false }]]}
     urlTransform={(url) => url.startsWith("asset:") || url.startsWith("inkask://asset/") ? url : defaultUrlTransform(url)}
     components={MARKDOWN_COMPONENTS}
-  >{normalizeMathMarkdown(content)}</ReactMarkdown></MarkdownContext.Provider>;
+  >{prepared.content}</ReactMarkdown></MarkdownContext.Provider>;
 }
