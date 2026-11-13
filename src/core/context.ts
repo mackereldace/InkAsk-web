@@ -14,6 +14,7 @@ import {
   type TemplateVariable,
   type TemplateVariables,
 } from "./templates";
+import { sourceAnchor } from "./source-location";
 
 const DEFAULT_BUDGET = 12_000;
 const CHUNK_SIZE = 700;
@@ -282,6 +283,7 @@ export function buildContext(input: BuildContextInput): ContextResult {
       id: `S${index + 2}`,
       page: candidate.page,
       text: candidate.text,
+      rects: sourceAnchor({ id: "", page: candidate.page, text: candidate.text }, input.project.pages.find((page) => page.page === candidate.page))?.rects,
     })),
   ];
 

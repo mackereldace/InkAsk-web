@@ -145,7 +145,7 @@ export default function App() {
     readingView = useRef<ReadingTarget | undefined>(undefined),
     positions = useRef(new Map<string, { top: number; left: number; page?: number; pageOffset?: number }>()),
     pdfPageSizes = useRef(new Map<number, { width: number; height: number }>()),
-    pendingNavigation = useRef<{ key: string; page?: number } | undefined>(undefined);
+    pendingNavigation = useRef<{ key: string; page?: number; anchor?: Anchor } | undefined>(undefined);
   function viewKey(target?: ReadingTarget) {
     const note = projectRef.current?.notes.find((n) => n.id === target?.noteId);
     return note ? `${note.id}:${answerFor(note, target?.messageId)?.id ?? "draft"}` : "pdf";
@@ -166,11 +166,11 @@ export default function App() {
       });
     }
   }
-  function navigate(target?: ReadingTarget, page?: number) {
+  function navigate(target?: ReadingTarget, page?: number, anchor?: Anchor) {
     rememberPosition();
     setLibraryVisible(false); setSidebarOpen(false);
     readingView.current = target;
-    pendingNavigation.current = { key: viewKey(target), page };
+    pendingNavigation.current = { key: viewKey(target), page, anchor };
     setFocusId(target?.noteId);
     setReadingMessageId(target?.messageId);
     clearSelection();
@@ -198,6 +198,26 @@ export default function App() {
         if (projectRef.current?.view.direction === "horizontal") root.scrollLeft += sheet.getBoundingClientRect().left - root.getBoundingClientRect().left + offset;
         else root.scrollTop += sheet.getBoundingClientRect().top - root.getBoundingClientRect().top + offset;
       }
+    }
+    if (pending.anchor && pdfRef.current && projectRef.current) {
+      const anchor = pending.anchor, document = pdfRef.current, view = projectRef.current.view;
+      let cancelled = false, frame = 0;
+      void document.getPage(anchor.page).then((page) => {
+        if (cancelled) return;
+        const viewport = page.getViewport({ scale: view.scale, rotation: (page.rotate + view.rotation) % 360 });
+        frame = requestAnimationFrame(() => {
+          if (cancelled) return;
+          const sheet = root.querySelector<HTMLElement>(`[data-pdf-page="${anchor.page}"] .pdf-sheet-content`);
+          const rect = anchor.rects[0] && screenRect(viewport, anchor.rects[0]);
+          if (!sheet || !rect) return;
+          const bounds = root.getBoundingClientRect(), origin = sheet.getBoundingClientRect();
+          root.scrollTop += origin.top + rect[1] - bounds.top - Math.min(64, bounds.height * .15);
+          const left = origin.left + rect[0], right = origin.left + rect[2];
+          if (view.direction === "horizontal" || left < bounds.left || right > bounds.right)
+            root.scrollLeft += left - bounds.left - 24;
+        });
+      }).catch(() => {});
+      return () => { cancelled = true; cancelAnimationFrame(frame); };
     }
   }, [navigation, project?.document.id, project?.view.direction]);
   const update = useCallback((fn: (p: Project) => void, noteScope?: string | null) => {
@@ -574,8 +594,10 @@ export default function App() {
     return pending;
   }, []);
   function locateSource(source: Source) {
-    pageTo(source.page);
     const anchor = sourceAnchor(source, projectRef.current?.pages.find((page) => page.page === source.page));
+    const page = Math.max(1, Math.min(projectRef.current?.document.pageCount ?? 1, source.page));
+    updateView((p) => { p.view.page = page; });
+    navigate(undefined, page, anchor);
     setCitationAnchor(anchor);
   }
   function context(n: Note) {

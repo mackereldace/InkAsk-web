@@ -4,6 +4,7 @@ import { AssetImage, Markdown, MathText } from "./Markdown";
 import AnnotationLayer, { type ReadingAnnotation } from "./AnnotationLayer";
 import { answerText, answerAnchorRange, answerRangeRects, selectedAnswerAnchor } from "./core/answer-selection";
 import { answerFor } from "./core/reading";
+import { sourceForAnchor } from "./core/source-location";
 import type { PreviewSource } from "./SourceCitation";
 import type { AnswerAnchor, ContextResult, Message, Note, Project, Rect, Source } from "./types";
 
@@ -43,7 +44,8 @@ export default function AnswerReader(props: Props) {
   const question = answer ? note.messages.slice(0, note.messages.indexOf(answer)).reverse().find((m) => m.role === "user") : undefined;
   const children = answer ? project.notes.filter((n) => n.parentId === note.id && n.parentMessageId === answer.id) : [];
   const parentMessage = project.notes.find((n) => n.id === note.parentId)?.messages.find((m) => m.id === note.parentMessageId);
-  const previewSource: PreviewSource | undefined = props.onPreviewSource ? (source) => props.onPreviewSource!({ ...source, ...(!source.rects?.length && source.id === "S1" && source.page === note.anchor.page && source.text.trim() === note.anchor.quote.trim() ? { rects: note.anchor.rects } : {}) }) : undefined;
+  const previewSource: PreviewSource | undefined = props.onPreviewSource ? (source) => props.onPreviewSource!(sourceForAnchor(source, note.anchor)) : undefined;
+  const locateSource = props.onLocateSource ? (source: Source) => props.onLocateSource!(sourceForAnchor(source, note.anchor)) : undefined;
   const annotationKey = JSON.stringify(children.map((child) => [child.id, child.title, child.branchQuote, child.answerAnchor]));
   useLayoutEffect(() => {
     const root = body.current, wrapper = surface.current;
@@ -105,9 +107,9 @@ export default function AnswerReader(props: Props) {
     </header>
     <details className="reading-source" open={!answer}>
       <summary>{note.parentId ? "选中的上一层回答" : `选中的 PDF 原文 · 第 ${note.anchor.page} 页`}</summary>
-      <blockquote className="message-body"><Markdown message={{ content: note.branchQuote || note.anchor.quote || "已选择原文区域", sources: parentMessage?.sources }} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={props.onLocateSource} /></blockquote>
+      <blockquote className="message-body"><Markdown message={{ content: note.branchQuote || note.anchor.quote || "已选择原文区域", sources: parentMessage?.sources }} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} /></blockquote>
     </details>
-    {question && <div className="answer-question"><small>这次提问</small><div className="message-body"><Markdown message={question} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={props.onLocateSource} /></div>
+    {question && <div className="answer-question"><small>这次提问</small><div className="message-body"><Markdown message={question} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} /></div>
       {!!question.assetIds.length && <div className="attachment-list">{question.assetIds.map((id) => {
         const asset = project.assets.find((a) => a.id === id); return asset ? <AssetImage key={id} asset={asset} /> : null;
       })}</div>}
@@ -116,7 +118,7 @@ export default function AnswerReader(props: Props) {
       <div ref={surface} className="answer-annotation-surface">
       <div ref={body} className={"message-body answer-body " + (answer.status === "streaming" ? "streaming" : "")}
         aria-label="AI 回答正文" onMouseUp={select} onKeyUp={select} onTouchEnd={select}>
-        <Markdown message={answer} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={props.onLocateSource} />
+        <Markdown message={answer} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} />
         {answer.status === "streaming" && !answer.content && <span className="thinking" role="status">正在阅读文档，生成回答…</span>}
       </div>
       <div className="pending-answer-selection" aria-hidden="true">{annotationLayout.selectionRects.map((rect, index) => <span key={index} style={{ left: rect[0], top: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1] }} />)}</div>
@@ -139,7 +141,7 @@ export default function AnswerReader(props: Props) {
       </div>
       {!!answer.sources?.length && <details className="answer-sources"><summary>本次参考来源 · {[...new Set(answer.sources.map((source) => source.page))].length} 页</summary>
         <p>这些片段是本次提供给模型的相关原文；悬停引用编号可查看对应截图。</p>
-        <div className="message-body"><Markdown message={{ content: answer.sources.map((source) => `[${source.id}] 第 ${source.page} 页`).join(" · "), sources: answer.sources }} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={props.onLocateSource} /></div>
+        <div className="message-body"><Markdown message={{ content: answer.sources.map((source) => `[${source.id}] 第 ${source.page} 页`).join(" · "), sources: answer.sources }} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} /></div>
       </details>}
       <p className="answer-reading-hint">选中回答里的文字，继续进入下一层提问。</p>
     </> : <div className="legacy-draft">
