@@ -39,6 +39,7 @@ import type { SourcePreviewResult } from "./SourceCitation";
 import { sourceAnchor, unionRects } from "./core/source-location";
 import { sourceEvidencePreview } from "./core/source-preview";
 import { answerAnchorRange } from "./core/answer-selection";
+import { anchorFragments, anchorPage } from "./core/pdf-anchor";
 import "./pdf-reader.css";
 import "./reader-interactions.css";
 import "./library.css";
@@ -106,7 +107,7 @@ export default function App() {
     [saveFailed, setSaveFailed] = useState(false);
   const [selection, setSelection] = useState<Anchor>(),
     [citationAnchor, setCitationAnchor] = useState<Anchor>(),
-    [selectionViewport, setSelectionViewport] = useState<PageViewport>(),
+    [selectionViewport, setSelectionViewport] = useState<{ page: number; viewport: PageViewport; atStart: boolean }>(),
     [draftId, setDraftId] = useState<string>(),
     [region, setRegion] = useState(false),
     [activeId, setActiveId] = useState<string>(),
@@ -135,7 +136,7 @@ export default function App() {
     openEpoch = useRef(0),
     openRequest = useRef(0),
     switchLocks = useRef(new Set<number>()),
-    captures = useRef(new Map<string, Promise<Asset | undefined>>()),
+    captures = useRef(new Map<string, Promise<Asset[] | undefined>>()),
     sourcePreviews = useRef(new Map<string, Promise<Blob>>()),
     sourceQueue = useRef(Promise.resolve()),
     selectionEpoch = useRef(0),
@@ -481,40 +482,55 @@ export default function App() {
     const p = projectRef.current, d = pdfRef.current;
     if (switchLocks.current.size || !p || !d || !note.anchor.rects.length) return;
     const documentId = p.document.id, epoch = openEpoch.current;
-    const existing = p.assets.find((asset) => asset.id === p.notes.find((n) => n.id === note.id)?.sourceAssetId);
+    const fragments = anchorFragments(note.anchor);
+    if (fragments.length > 4) { setNotice("跨页选区超过 4 页，请缩小截图范围，或取消附图后使用完整选文提问。"); return; }
+    const saved = p.notes.find((n) => n.id === note.id);
+    const ids = saved?.sourceAssetIds ?? (saved?.sourceAssetId ? [saved.sourceAssetId] : []);
+    const existing = ids.map(id => p.assets.find(asset => asset.id === id)).filter((asset): asset is Asset => !!asset);
+    const complete = existing.length === fragments.length;
     let pending = captures.current.get(note.id);
-    if (!existing && !pending) {
+    if (!complete && !pending) {
       pending = (async () => {
-        const rect = note.anchor.rects.reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])] as Anchor["rects"][0]);
-        const { blob } = await renderImage(await d.getPage(note.anchor.page), rect, p.view.rotation);
-        if (projectRef.current?.document.id !== documentId || epoch !== openEpoch.current) return;
-        const asset: Asset = { id: uid(), name: `第 ${note.anchor.page} 页选区.png`, mime: "image/png", data: blob, source: { page: note.anchor.page, rect } };
+        const assets: Asset[] = [];
+        for (const fragment of fragments) {
+          const rect = unionRects(fragment.rects);
+          if (!rect) return;
+          const { blob } = await renderImage(await d.getPage(fragment.page), rect, p.view.rotation);
+          if (projectRef.current?.document.id !== documentId || epoch !== openEpoch.current) return;
+          assets.push({ id: uid(), name: `第 ${fragment.page} 页选区.png`, mime: "image/png", data: blob, source: { page: fragment.page, rect } });
+        }
         update((project) => {
           const n = project.notes.find((n) => n.id === note.id);
-          if (n) { project.assets.push(asset); n.sourceAssetId = asset.id; }
+          if (n) {
+            project.assets.push(...assets); n.sourceAssetId = assets[0].id;
+            if (assets.length > 1) n.sourceAssetIds = assets.map(asset => asset.id);
+          }
         }, note.id);
-        return asset;
+        return assets;
       })();
       captures.current.set(note.id, pending);
       void pending.finally(() => captures.current.delete(note.id)).catch(() => {});
     }
     try {
-      const asset = existing ?? await pending;
-      if (asset && attachToQuestion && projectRef.current?.document.id === documentId)
+      const assets = complete ? existing : await pending;
+      if (assets && attachToQuestion && projectRef.current?.document.id === documentId)
         update((project) => {
           const n = project.notes.find((n) => n.id === note.id);
-          if (n && !n.draftAssetIds.includes(asset.id)) {
-            if (n.draftAssetIds.length < 4) n.draftAssetIds.push(asset.id);
+          if (n) {
+            const added = assets.filter(asset => !n.draftAssetIds.includes(asset.id));
+            if (n.draftAssetIds.length + added.length <= 4) n.draftAssetIds.push(...added.map(asset => asset.id));
             else setNotice("每次提问最多附加 4 张图片。");
           }
         }, note.id);
-      return asset;
+      return assets?.[0];
     } catch (e) { setNotice("截图失败：" + err(e)); }
   }
   async function submitSelection(task: Task, question: string, images: File[], includeCrop: boolean) {
     const p = projectRef.current;
     if (!p || switchLocks.current.size) return;
     if (!status.configured) { setSettings(true); return; }
+    if (includeCrop && selection && anchorFragments(selection).length + images.length > 4)
+      throw new Error("每次最多附 4 张图片，请缩小截图范围，或取消附选区截图后使用完整选文提问。");
     const documentId = p.document.id, selectionGeneration = selectionEpoch.current, request = openRequest.current;
     let n = p.notes.find((note) => note.id === draftId);
     const template = p.templates.find((template) => template.task === task) ?? p.templates[0];
@@ -546,8 +562,13 @@ export default function App() {
     setAnswerSelection(undefined); setDraftId(undefined); setCitationAnchor(undefined); setSelection(anchor);
     const epoch = ++selectionEpoch.current, d = pdfRef.current, view = projectRef.current?.view;
     if (!d || !view) return;
-    void d.getPage(anchor.page).then((page) => {
-      if (epoch === selectionEpoch.current) setSelectionViewport(page.getViewport({ scale: view.scale, rotation: (page.rotate + view.rotation) % 360 }));
+    const native = window.getSelection(), range = native?.rangeCount ? native.getRangeAt(0) : undefined;
+    const atStart = !!range && native?.focusNode === range.startContainer && native.focusOffset === range.startOffset;
+    const node = native?.focusNode, element = node?.nodeType === 1 ? node as Element : node?.parentElement;
+    const focusPage = Number(element?.closest<HTMLElement>("[data-pdf-page]")?.dataset.pdfPage);
+    const fragment = anchorPage(anchor, focusPage) ?? (atStart ? anchorFragments(anchor)[0] : anchorFragments(anchor).at(-1)!);
+    void d.getPage(fragment.page).then((page) => {
+      if (epoch === selectionEpoch.current) setSelectionViewport({ page: fragment.page, atStart, viewport: page.getViewport({ scale: view.scale, rotation: (page.rotate + view.rotation) % 360 }) });
     }).catch(() => {});
   }
   const selectionBounds = useCallback(() => {
@@ -555,8 +576,16 @@ export default function App() {
     if (!root) return;
     if (draftId) return root.querySelector(".answer-document-heading")?.getBoundingClientRect();
     if (selection && selectionViewport) {
-      const page = root.querySelector(`[data-pdf-page="${selection.page}"] .pdf-page`);
-      const rect = unionRects(selection.rects.map((rect) => screenRect(selectionViewport, rect)));
+      const native = window.getSelection();
+      if (native?.rangeCount && !native.isCollapsed && root.contains(native.focusNode)) {
+        const caret = native.getRangeAt(0).cloneRange(); caret.collapse(selectionViewport.atStart);
+        const rect = caret.getBoundingClientRect();
+        if (rect.height || rect.width) return rect;
+      }
+      const fragment = anchorPage(selection, selectionViewport.page);
+      const page = root.querySelector(`[data-pdf-page="${selectionViewport.page}"] .pdf-page`);
+      const focusRect = selectionViewport.atStart ? fragment?.rects[0] : fragment?.rects.at(-1);
+      const rect = focusRect && screenRect(selectionViewport.viewport, focusRect);
       if (!page || !rect) return;
       const bounds = page.getBoundingClientRect();
       return { left: bounds.left + rect[0], top: bounds.top + rect[1], right: bounds.left + rect[2], bottom: bounds.top + rect[3] };
@@ -889,7 +918,7 @@ export default function App() {
   const page = project?.view.page ?? 1,
     currentText = project?.pages.find((p) => p.page === page),
     roots =
-      project?.notes.filter((n) => !n.parentId && n.anchor.page === page) ?? [],
+      project?.notes.filter((n) => !n.parentId && !!anchorPage(n.anchor, page)) ?? [],
     focused = project?.notes.find((n) => n.id === focusId);
   const parents = readingTrail(project?.notes ?? [], focusId);
   const canOcr = !!currentText && currentText.status !== "pending" && (currentText.source === "ocr" || !currentText.text.trim());

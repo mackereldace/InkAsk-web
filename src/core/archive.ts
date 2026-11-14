@@ -11,6 +11,7 @@ import type {
   Rect,
   Source,
 } from "../types";
+import { anchorFragments, anchorPagesLabel, clonePdfAnchor } from "./pdf-anchor";
 
 export const ARCHIVE_LIMITS = Object.freeze({
   archiveBytes: 128 * 1024 * 1024,
@@ -132,6 +133,36 @@ function assertRect(value: unknown, name: string): asserts value is Rect {
   }
   if (value[2] <= value[0] || value[3] <= value[1])
     throw new Error(`${name} must have positive dimensions.`);
+}
+
+function assertPdfAnchor(value: unknown, pageCount: number): void {
+  assertRecord(value, "note.anchor");
+  const fragment = (item: unknown, name: string) => {
+    assertRecord(item, name);
+    if (!Number.isSafeInteger(item.page) || (item.page as number) < 1 || (item.page as number) > pageCount)
+      throw new Error(`${name}.page is outside the document page range.`);
+    assertArray(item.rects, `${name}.rects`);
+    if (!item.rects.length) throw new Error(`${name} must have an anchor rectangle.`);
+    item.rects.forEach((rect, index) => assertRect(rect, `${name}.rects[${index}]`));
+    assertString(item.quote, `${name}.quote`);
+  };
+  fragment(value, "note.anchor");
+  if (value.fragments === undefined) return;
+  assertArray(value.fragments, "note.anchor.fragments");
+  if (!value.fragments.length) throw new Error("A multi-page anchor must have fragments.");
+  let previous = 0;
+  for (const [index, item] of value.fragments.entries()) {
+    fragment(item, `note.anchor.fragments[${index}]`);
+    const page = (item as Record<string, unknown>).page as number;
+    if (page <= previous) throw new Error("Anchor fragments must have unique pages in document order.");
+    previous = page;
+  }
+  const parts = value.fragments as Array<{ page: number; rects: Rect[]; quote: string }>;
+  const first = parts[0], rects = value.rects as Rect[];
+  if (value.page !== first.page || rects.length !== first.rects.length || !rects.every((rect, index) => equalRect(rect, first.rects[index])))
+    throw new Error("Anchor legacy coordinates must match its first fragment.");
+  if ((value.quote as string).trim() !== parts.map(part => part.quote).join("\n").trim())
+    throw new Error("Anchor quote must contain all fragments in document order.");
 }
 
 function rejectPrototypeKeys(value: unknown, path = "manifest"): void {
@@ -281,11 +312,7 @@ function remapProject(project: Project): Project {
       ...note,
       id: noteIds.get(note.id)!,
       title: remapText(note.title, allIds),
-      anchor: {
-        page: note.anchor.page,
-        rects: note.anchor.rects.map((rect) => [...rect]),
-        quote: remapText(note.anchor.quote, allIds),
-      },
+      anchor: clonePdfAnchor(note.anchor, quote => remapText(quote, allIds)),
       ...(note.parentId
         ? { parentId: noteIds.get(note.parentId) ?? note.parentId }
         : {}),
@@ -302,6 +329,7 @@ function remapProject(project: Project): Project {
         end: note.answerAnchor.start + remapText(note.answerAnchor.quote, allIds).length,
         quote: remapText(note.answerAnchor.quote, allIds) } } : {}),
       ...(note.sourceAssetId ? { sourceAssetId: assetIds.get(note.sourceAssetId) ?? note.sourceAssetId } : {}),
+      ...(note.sourceAssetIds ? { sourceAssetIds: remapAssetIds(note.sourceAssetIds, allIds) } : {}),
       inheritedHistory: remapHistory(note.inheritedHistory, allIds),
       templateId: templateIds.get(note.templateId) ?? note.templateId,
       draft: remapText(note.draft, allIds),
@@ -402,6 +430,9 @@ function validateReferences(project: Project): void {
     if (!templateIds.has(note.templateId))
       throw new Error("A note references a missing template.");
     if (note.sourceAssetId && !assetIds.has(note.sourceAssetId)) throw new Error("A note source image is missing.");
+    for (const id of note.sourceAssetIds ?? []) {
+      if (!assetIds.has(id)) throw new Error("A note source image is missing.");
+    }
     validateTextReferences(note.draft, assetIds);
     if (note.branchQuote) validateTextReferences(note.branchQuote, assetIds);
     if (note.answerAnchor) validateTextReferences(note.answerAnchor.quote, assetIds);
@@ -481,16 +512,15 @@ function validateManifest(value: unknown): asserts value is Manifest {
     assertRecord(item, `project.notes[${index}]`);
     assertString(item.id, `project.notes[${index}].id`);
     assertString(item.title, `project.notes[${index}].title`);
-    assertRecord(item.anchor, `project.notes[${index}].anchor`);
-    assertNumber(item.anchor.page, "note.anchor.page");
-    assertArray(item.anchor.rects, "note.anchor.rects");
-    if (!item.anchor.rects.length)
-      throw new Error("A note must have an anchor rectangle.");
-    item.anchor.rects.forEach((rect, rectIndex) =>
-      assertRect(rect, `note.anchor.rects[${rectIndex}]`),
-    );
-    assertString(item.anchor.quote, "note.anchor.quote");
+    assertPdfAnchor(item.anchor, project.document.pageCount as number);
     if (item.sourceAssetId !== undefined) assertString(item.sourceAssetId, "note.sourceAssetId");
+    if (item.sourceAssetIds !== undefined) {
+      assertArray(item.sourceAssetIds, "note.sourceAssetIds");
+      if (!item.sourceAssetIds.length) throw new Error("note.sourceAssetIds must not be empty.");
+      item.sourceAssetIds.forEach(id => assertString(id, "note.sourceAssetIds entry"));
+      if (new Set(item.sourceAssetIds).size !== item.sourceAssetIds.length) throw new Error("note.sourceAssetIds contains duplicate images.");
+      if (item.sourceAssetId !== undefined && item.sourceAssetId !== item.sourceAssetIds[0]) throw new Error("note.sourceAssetId must be the first source image.");
+    }
     if (item.answerAnchor !== undefined) {
       assertRecord(item.answerAnchor, "note.answerAnchor");
       const { start, end, quote } = item.answerAnchor;
@@ -762,8 +792,11 @@ export function exportMarkdown(project: Project): string {
     for (const note of notesByParent.get(parentId) ?? []) {
       const heading = "#".repeat(Math.min(depth + 2, 6));
       lines.push(`${heading} ${note.title}`, "");
-      lines.push(`- 定位：第 ${note.anchor.page} 页`);
-      if (note.anchor.quote) lines.push(`- 原文：${note.anchor.quote}`);
+      lines.push(`- 定位：${anchorPagesLabel(note.anchor)}`);
+      if (note.anchor.fragments) {
+        for (const fragment of anchorFragments(note.anchor))
+          if (fragment.quote) lines.push(`- 原文（第 ${fragment.page} 页）：${fragment.quote}`);
+      } else if (note.anchor.quote) lines.push(`- 原文：${note.anchor.quote}`);
       if (note.branchQuote) lines.push(`- 分支引用：${note.branchQuote}`);
       lines.push("");
       for (const message of note.messages)

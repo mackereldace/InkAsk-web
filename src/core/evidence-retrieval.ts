@@ -1,6 +1,7 @@
 import type { Anchor, Note, Project, Rect } from "../types";
 import type { EvidenceBlock } from "./evidence-types";
 import { anchorEvidenceBlocks, pageEvidenceBlocks } from "./evidence-blocks";
+import { anchorFragments, anchorPage } from "./pdf-anchor";
 
 const MAX_EVIDENCE = 3;
 const common = new Set(["什么", "怎么", "如何", "这个", "那个", "一个", "这里", "后面", "使用", "条件", "问题", "请问", "解释", "中的", "的是", "什么是", "原文", "引用", "参考", "来源", "本次", "提供", "片段", "文档", "the", "and", "this", "that", "with", "from", "what", "how", "why", "is", "of", "to", "in", "on", "for", "as", "an"]);
@@ -71,7 +72,7 @@ export function rankEvidenceBlocks(blocks: readonly EvidenceBlock[], query: stri
       else if (sections.size) score *= .28;
       else score *= .75;
     }
-    const anchor = options.anchor;
+    const anchor = options.anchor && anchorPage(options.anchor, block.page);
     if (anchor && block.page === anchor.page) {
       score += .15;
       if (block.rects.some((a) => anchor.rects.some((b) => intersects(a, b)))) score += Math.min(3, content * .5);
@@ -109,12 +110,14 @@ export function selectEvidence(project: Project, note: Note, question: string): 
   const selected: EvidenceBlock[] = [];
   const add = (block: EvidenceBlock) => {
     if (block.role === "marginal" || block.role === "heading" || (block.role === "caption" && !imageQuery(query))) return;
-    if (identity(block.text) === identity(note.anchor.quote)) return;
+    if (anchorFragments(note.anchor).some(fragment => fragment.page === block.page && identity(block.text) === identity(fragment.quote))) return;
     const next = deduplicateEvidence([...selected, block]);
     if (next.length <= MAX_EVIDENCE) { selected.length = 0; selected.push(...next); }
   };
-  const page = project.pages.find((page) => page.page === note.anchor.page && page.status === "ready");
-  const local = page ? anchorEvidenceBlocks(page, note.anchor).filter((block) => !["heading", "caption", "marginal"].includes(block.role)).sort((a, b) => (a.end - a.start) - (b.end - b.start) || a.start - b.start) : [];
+  const local = anchorFragments(note.anchor).flatMap(fragment => {
+    const page = project.pages.find(page => page.page === fragment.page && page.status === "ready");
+    return page ? anchorEvidenceBlocks(page, fragment) : [];
+  }).filter((block) => !["heading", "caption", "marginal"].includes(block.role)).sort((a, b) => (a.end - a.start) - (b.end - b.start) || a.page - b.page || a.start - b.start);
   for (const block of local.slice(0, 2)) add(block);
   const primary = local[0];
   if (primary?.section && /后面|使用|作用|怎么|如何|为什么|证明|推导|条件|解释|成立|use|prove|why|how|explain/i.test(question || "解释")) {

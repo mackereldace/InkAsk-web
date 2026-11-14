@@ -816,6 +816,7 @@ button:hover {
 .textLayer.selecting .endOfContent {
   top: 0;
 }
+.textLayer .endOfContent::selection, .textLayer br::selection { background: transparent; }
 .textLayer .ocr-word {
   display: inline-block;
   line-height: 1.1;
@@ -828,6 +829,8 @@ button:hover {
   inset: 0;
   pointer-events: none;
   z-index: 3;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .highlight {
   position: absolute;

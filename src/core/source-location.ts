@@ -1,4 +1,5 @@
 import type { Anchor, PageText, Rect, Source } from "../types";
+import { anchorPage } from "./pdf-anchor";
 
 interface IndexedText { text: string; owners: number[] }
 const mathCommands: Record<string, string> = { alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", theta: "θ", lambda: "λ", mu: "μ", pi: "π", sigma: "σ", phi: "φ", omega: "ω", Delta: "Δ", Sigma: "Σ", Omega: "Ω", times: "×", cdot: "·", le: "≤", leq: "≤", ge: "≥", geq: "≥", infty: "∞", partial: "∂", nabla: "∇", sum: "∑", int: "∫" };
@@ -26,12 +27,13 @@ function normalized(text: string): string { return canonical({ text, owners: [] 
 /** Old S1 records joined the selected quote and nearby page text. The note's
  * original coordinates still identify the quote, including in child answers. */
 export function sourceForAnchor(source: Source, anchor: Anchor): Source {
-  if (source.rects?.length || source.id !== "S1" || source.page !== anchor.page || !anchor.rects.length || !anchor.quote.trim()) return source;
+  const fragment = anchorPage(anchor, source.page);
+  if (source.rects?.length || source.id !== "S1" || !fragment?.rects.length || !fragment.quote.trim()) return source;
   const legacy = /^选中原文：([\s\S]*?)(?:\n\s*\n当前页附近：|$)/.exec(source.text.trim());
   const selected = legacy ? legacy[1] : source.text;
   const compact = (text: string) => text.replace(/\s+/g, "");
-  if (compact(selected) !== compact(anchor.quote)) return source;
-  return { ...source, text: anchor.quote.trim(), rects: anchor.rects.map((rect) => [...rect]) };
+  if (compact(selected) !== compact(fragment.quote)) return source;
+  return { ...source, text: fragment.quote.trim(), rects: fragment.rects.map((rect) => [...rect]) };
 }
 const pageIndices = new WeakMap<PageText, { words: PageText["words"]; value: IndexedText }>();
 function pageIndex(page: PageText): IndexedText {

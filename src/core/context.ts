@@ -14,6 +14,7 @@ import {
   type TemplateVariables,
 } from "./templates";
 import { selectEvidence } from "./evidence-retrieval";
+import { anchorFragments } from "./pdf-anchor";
 
 const DEFAULT_BUDGET = 12_000;
 const MAX_HISTORY_MESSAGES = 40;
@@ -60,12 +61,12 @@ function pageCoverage(project: Project): string {
   return `已可检索 ${ready}/${total} 页${detail.length ? `；${detail.join("；")}` : ""}。`;
 }
 
-function rootSource(note: Note): Source {
-  return {
-    id: "S1", page: note.anchor.page,
-    rects: note.anchor.rects.map((rect) => [...rect]),
-    text: note.anchor.quote.trim() || "（选中的 PDF 区域，参见提问附图）",
-  };
+function rootSources(note: Note): Source[] {
+  return anchorFragments(note.anchor).map((fragment, index) => ({
+    id: `S${index + 1}`, page: fragment.page,
+    rects: fragment.rects.map((rect) => [...rect]),
+    text: fragment.quote.trim() || "（选中的 PDF 区域，参见提问附图）",
+  }));
 }
 
 function currentHistory(note: Note): HistoryMessage[] {
@@ -151,7 +152,7 @@ function renderPrompt(
   const variables: TemplateVariables = {
     task: TASK_LABELS[template.task],
     document_title: project.document.name,
-    page_number: String(note.anchor.page),
+    page_number: anchorFragments(note.anchor).map(fragment => fragment.page).join("、"),
     coverage,
     selected_text: (note.parentId ? note.branchQuote : note.anchor.quote)?.trim() || "（未选择文字）",
     context_with_source_ids: sourceSection(sources),
@@ -175,7 +176,7 @@ function renderPrompt(
 export function buildContext(input: BuildContextInput): ContextResult {
   const budget = Math.max(1, input.budget ?? DEFAULT_BUDGET);
   const coverage = pageCoverage(input.project);
-  const fixedSource = rootSource(input.note);
+  const fixedSources = rootSources(input.note);
   const candidates = selectEvidence(input.project, input.note, input.question);
   const allHistory = currentHistory(input.note);
   const history = allHistory.slice(-MAX_HISTORY_MESSAGES);
@@ -187,9 +188,9 @@ export function buildContext(input: BuildContextInput): ContextResult {
   let historyStart = 0;
 
   const makeSources = (count: number): Source[] => [
-    fixedSource,
+    ...fixedSources,
     ...candidates.slice(0, count).map((candidate, index) => ({
-      id: `S${index + 2}`,
+      id: `S${index + fixedSources.length + 1}`,
       page: candidate.page,
       text: candidate.text,
       ...(candidate.rects.length ? { rects: candidate.rects.map((rect) => [...rect] as typeof rect) } : {}),

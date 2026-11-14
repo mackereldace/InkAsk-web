@@ -1,5 +1,6 @@
 import type { AnswerAnchor, HistoryMessage, Note, Project, Task } from "../types";
 import { mathExcerpt } from "./math-markdown";
+import { clonePdfAnchor } from "./pdf-anchor";
 
 function id(): string {
   return (
@@ -77,11 +78,7 @@ export function createBranch(
   return {
     id: id(),
     title: cleanQuote ? `追问 · ${mathExcerpt(cleanQuote)}` : "分支追问",
-    anchor: {
-      page: note.anchor.page,
-      rects: note.anchor.rects.map((rect) => [...rect]),
-      quote: note.anchor.quote,
-    },
+    anchor: clonePdfAnchor(note.anchor),
     parentId: note.id,
     parentMessageId,
     ...(cleanQuote ? { branchQuote: cleanQuote } : {}),

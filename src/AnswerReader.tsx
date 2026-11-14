@@ -6,6 +6,7 @@ import { answerText, answerAnchorRange, answerRangeRects, selectedAnswerAnchor }
 import { answerFor } from "./core/reading";
 import { sourceForAnchor } from "./core/source-location";
 import { prepareCitationMarkdown } from "./core/citation-markdown";
+import { anchorPagesLabel } from "./core/pdf-anchor";
 import type { PreviewSource } from "./SourceCitation";
 import type { AnswerAnchor, ContextResult, Message, Note, Project, Rect, Source } from "./types";
 
@@ -110,7 +111,7 @@ export default function AnswerReader(props: Props) {
       </details>
     </header>
     <details className="reading-source" open={!answer}>
-      <summary>{note.parentId ? "选中的上一层回答" : `选中的 PDF 原文 · 第 ${note.anchor.page} 页`}</summary>
+      <summary>{note.parentId ? "选中的上一层回答" : `选中的 PDF 原文 · ${anchorPagesLabel(note.anchor)}`}</summary>
       <blockquote className="message-body"><Markdown message={{ content: note.branchQuote || note.anchor.quote || "已选择原文区域", sources: parentMessage?.sources }} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} /></blockquote>
     </details>
     {question && <div className="answer-question"><small>这次提问</small><div className="message-body"><Markdown message={question} project={project} onPage={onPage} onPreviewSource={previewSource} onLocateSource={locateSource} /></div>

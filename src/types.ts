@@ -14,10 +14,14 @@ export interface PageText {
   width: number;
   height: number;
 }
-export interface Anchor {
+export interface AnchorFragment {
   page: number;
   rects: Rect[];
   quote: string;
+}
+export interface Anchor extends AnchorFragment {
+  /** Page-local pieces in document order. Absent for legacy/single-page anchors. */
+  fragments?: AnchorFragment[];
 }
 export interface Source {
   rects?: Rect[];
@@ -83,6 +87,8 @@ export interface Note {
   branchQuote?: string;
   answerAnchor?: AnswerAnchor;
   sourceAssetId?: string;
+  /** Ordered source crops; sourceAssetId remains the first crop for compatibility. */
+  sourceAssetIds?: string[];
   inheritedHistory: HistoryMessage[];
   collapsed: boolean;
   task: Task;

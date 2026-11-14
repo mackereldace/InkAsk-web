@@ -10,8 +10,10 @@ import type { Anchor, Note, PageText, Rect } from "./types";
 import AnnotationLayer from "./AnnotationLayer";
 import { MathText } from "./Markdown";
 import { startCanvasRender } from "./core/pdf-reader";
-import { registerTextLayerSelection, textSelectionRects } from "./core/text-layer-selection";
+import { registerTextLayerSelection } from "./core/text-layer-selection";
 import { registerBlankTextSelection } from "./core/text-selection-hit";
+import { anchorPage } from "./core/pdf-anchor";
+import type { PdfTextPage } from "./core/pdf-text-selection";
 interface Props {
   pdf: PDFDocumentProxy;
   page: number;
@@ -23,6 +25,7 @@ interface Props {
   activeId?: string;
   selection?: Anchor;
   onSelect: (anchor: Anchor) => void;
+  onTextLayer: (entry: PdfTextPage) => () => void;
   onFocus: (id: string) => void;
   onSize: (size: {
     width: number;
@@ -42,6 +45,7 @@ export default function PdfPage({
   activeId,
   selection: selected,
   onSelect,
+  onTextLayer,
   onFocus,
   onSize,
   onError,
@@ -57,6 +61,9 @@ export default function PdfPage({
     errorCallback = useRef(onError);
   sizeCallback.current = onSize;
   errorCallback.current = onError;
+  const textLayerCallback = useRef(onTextLayer);
+  textLayerCallback.current = onTextLayer;
+  const isOcr = text?.source === "ocr";
   useEffect(() => {
     let alive = true;
     const el = canvas.current, container = layer.current, wrapper = wrap.current;
@@ -86,7 +93,8 @@ export default function PdfPage({
         if (ownsDom()) {
           const releaseGuard = registerTextLayerSelection(container);
           const releaseHit = registerBlankTextSelection(container, viewport.rotation % 180 !== 0);
-          unregisterSelection = () => { releaseHit(); releaseGuard(); };
+          const releaseCollection = textLayerCallback.current({ page, layer: container, wrapper, viewport });
+          unregisterSelection = () => { releaseCollection(); releaseHit(); releaseGuard(); };
         }
       } catch (e) {
         if (ownsDom() && !(e instanceof Error && e.name === "RenderingCancelledException"))
@@ -97,50 +105,21 @@ export default function PdfPage({
       alive = false; unregisterSelection?.(); rendering?.cancel(); textLayer?.cancel();
       if (!el.isConnected) { el.width = 0; el.height = 0; }
     };
-  }, [pdf, page, scale, rotation, text?.source]);
+  }, [pdf, page, scale, rotation, isOcr]);
   useEffect(() => {
     if (vp && text?.source === "ocr" && ocrLayer.current) {
       const releaseGuard = registerTextLayerSelection(ocrLayer.current);
       const releaseHit = registerBlankTextSelection(ocrLayer.current, vp.rotation % 180 !== 0);
-      return () => { releaseHit(); releaseGuard(); };
+      const releaseCollection = textLayerCallback.current({ page, layer: ocrLayer.current, wrapper: wrap.current!, viewport: vp });
+      return () => { releaseCollection(); releaseHit(); releaseGuard(); };
     }
   }, [vp, text?.source, text?.words]);
-  function selection() {
-    if (regionMode || !vp) return;
-    const s = window.getSelection();
-    if (!s || s.isCollapsed || !s.rangeCount) return;
-    const range = s.getRangeAt(0);
-    if (!wrap.current?.contains(range.commonAncestorContainer)) return;
-    const quote = s.toString().trim();
-    if (!quote) return;
-    const bounds = wrap.current!.getBoundingClientRect();
-    const textRoot = text?.source === "ocr" ? ocrLayer.current : layer.current;
-    if (!textRoot) return;
-    const rects = textSelectionRects(range, textRoot)
-      .filter((r) => r.width > 1 && r.height > 1)
-      .map((r) =>
-        normalizeRect([
-          ...vp.convertToPdfPoint(r.left - bounds.left, r.top - bounds.top),
-          ...vp.convertToPdfPoint(r.right - bounds.left, r.bottom - bounds.top),
-        ]),
-      );
-    if (rects.length) onSelect({ page, quote, rects });
-  }
-  const selectionCallback = useRef(selection);
-  selectionCallback.current = selection;
-  useEffect(() => {
-    const changed = () => selectionCallback.current();
-    document.addEventListener("selectionchange", changed);
-    return () => document.removeEventListener("selectionchange", changed);
-  }, []);
+  const selectedPart = selected && anchorPage(selected, page);
   return (
     <div
       ref={wrap}
       className={"pdf-page" + (regionMode ? " region-mode" : "")}
       style={{ width: vp?.width ?? 600, height: vp?.height ?? 800 }}
-      onMouseUp={selection}
-      onKeyUp={selection}
-      onTouchEnd={selection}
     >
       <canvas
         ref={canvas}
@@ -183,17 +162,17 @@ export default function PdfPage({
             })}
         </div>
       )}
-      {vp && selected?.page === page && <div className="pdf-selection" aria-label={selected.quote ? "已选择的 PDF 文字" : "已框选的 PDF 区域"}>
-        {selected.rects.map((rect, index) => {
+      {vp && selectedPart && <div className="pdf-selection" aria-label={selectedPart.quote ? "已选择的 PDF 文字" : "已框选的 PDF 区域"}>
+        {selectedPart.rects.map((rect, index) => {
           const r = screenRect(vp, rect);
-          return <span key={index} className={"pdf-selection-rect " + (selected.quote ? "text-selection" : "area-selection")}
+          return <span key={index} className={"pdf-selection-rect " + (selectedPart.quote ? "text-selection" : "area-selection")}
             style={{ left: r[0], top: r[1], width: r[2] - r[0], height: r[3] - r[1] }} />;
         })}
       </div>}
       {vp && <AnnotationLayer width={vp.width} activeId={activeId} onFocus={onFocus}
         annotations={notes.map((note) => ({
           id: note.id, title: note.title,
-          rects: note.anchor.rects.map((rect) => screenRect(vp, rect)),
+          rects: (anchorPage(note.anchor, page)?.rects ?? []).map((rect) => screenRect(vp, rect)),
           preview: <><small>选文便签</small><MathText>{note.anchor.quote || note.title}</MathText></>,
         }))} />}
       {regionMode && (

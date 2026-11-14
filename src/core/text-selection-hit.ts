@@ -39,10 +39,12 @@ function textLines(layer: HTMLElement, vertical: boolean): TextRun[][] {
 
 function nativeCaret(doc: Document, x: number, y: number, layer: HTMLElement): Caret | undefined {
   const modern = (doc as Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null }).caretPositionFromPoint?.(x, y);
-  const legacy = modern ? undefined : doc.caretRangeFromPoint?.(x, y);
-  const node = modern?.offsetNode ?? legacy?.startContainer, offset = modern?.offset ?? legacy?.startOffset;
-  if (node?.nodeType === 3 && layer.contains(node) && !node.parentElement?.closest(".endOfContent") && offset !== undefined)
-    return { node: node as Text, offset };
+  const valid = (node?: Node, offset?: number): Caret | undefined => node?.nodeType === 3 && layer.contains(node) && !node.parentElement?.closest(".endOfContent") && offset !== undefined
+    ? { node: node as Text, offset } : undefined;
+  const found = valid(modern?.offsetNode, modern?.offset);
+  if (found) return found;
+  const legacy = doc.caretRangeFromPoint?.(x, y);
+  return valid(legacy?.startContainer, legacy?.startOffset);
 }
 
 /** Use actual caret geometry, preserving ligatures, CJK and UTF-16 boundaries. */
@@ -72,48 +74,93 @@ function runCaret(run: TextRun, point: { x: number; y: number }, vertical: boole
   return { node, offset };
 }
 
-/** Repair only empty-space mouse endpoints. Native text, touch and keyboard stay native. */
-export function registerBlankTextSelection(layer: HTMLElement, vertical = false): () => void {
-  const doc = layer.ownerDocument, view = doc.defaultView;
-  if (!view) return () => {};
-  let drag: { anchor: Caret; start: { x: number; y: number }; point: { x: number; y: number }; moved: boolean; direction: -1 | 0 | 1; pointerId: number; reliableButtons: boolean } | undefined;
-  let lines: TextRun[][] | undefined, frame = 0;
-  const stop = () => { drag = undefined; lines = undefined; view.cancelAnimationFrame(frame); frame = 0; };
-  const repair = () => {
+interface TextLayerEntry { layer: HTMLElement; vertical: boolean; users: number; lines?: TextRun[][] }
+interface HitController {
+  entries: Map<HTMLElement, TextLayerEntry>;
+  flush: () => boolean;
+  forget: (entry: TextLayerEntry) => void;
+  dispose: () => void;
+}
+const hitControllers = new WeakMap<Document, HitController>();
+
+function createHitController(doc: Document): HitController {
+  const view = doc.defaultView!;
+  const entries = new Map<HTMLElement, TextLayerEntry>();
+  let drag: { origin: TextLayerEntry; anchor: Caret; start: { x: number; y: number }; point: { x: number; y: number }; moved: boolean; xDirection: -1 | 0 | 1; yDirection: -1 | 0 | 1; crossed: boolean; pointerId: number; reliableButtons: boolean } | undefined;
+  let frame = 0, pendingEndpoint = false;
+  const clearGeometry = () => { for (const entry of entries.values()) entry.lines = undefined; };
+  const stop = () => { drag = undefined; clearGeometry(); view.cancelAnimationFrame(frame); frame = 0; };
+  const entryAt = (node: Node | null) => node ? [...entries.values()].find(entry => entry.layer === node || entry.layer.contains(node)) : undefined;
+  const targetAt = (point: { x: number; y: number }, hit: Element | null): TextLayerEntry | undefined => {
+    if (!drag) return;
+    const scope = drag.origin.layer.closest(".continuous-pdf"), direct = entryAt(hit);
+    if (direct && direct.layer.closest(".continuous-pdf") === scope) return direct;
+    // A visible sheet whose text is still rendering is not the preceding page.
+    const sheet = hit?.closest("[data-pdf-page]");
+    if (scope && sheet && scope.contains(sheet)) {
+      const ownPage = [...entries.values()].find(entry => sheet.contains(entry.layer));
+      if (!ownPage) { pendingEndpoint = true; return; }
+      return ownPage;
+    }
+    if (hit?.closest(".textLayer")) return;
+    const horizontal = scope?.classList.contains("direction-horizontal") ?? false;
+    const distance = (entry: TextLayerEntry) => {
+      const box = entry.layer.getBoundingClientRect();
+      const x = Math.max(box.left - point.x, point.x - box.right, 0), y = Math.max(box.top - point.y, point.y - box.bottom, 0);
+      return horizontal ? x + y * .001 : y + x * .001;
+    };
+    return [...entries.values()].filter(entry => entry.layer.isConnected && entry.layer.closest(".continuous-pdf") === scope)
+      .sort((a, b) => distance(a) - distance(b))[0];
+  };
+  const repair = (): boolean => {
     frame = 0;
-    if (!drag?.moved || !layer.isConnected || !drag.anchor.node.isConnected) return;
-    const { point, anchor } = drag, bounds = layer.getBoundingClientRect();
-    const primary = vertical ? point.x : point.y;
-    if (primary < (vertical ? bounds.left : bounds.top) || primary > (vertical ? bounds.right : bounds.bottom)) return;
+    if (!drag?.moved) return !pendingEndpoint;
+    if (!drag.origin.layer.isConnected || !drag.anchor.node.isConnected) { pendingEndpoint = true; return false; }
+    const { point, anchor } = drag;
     const hit = doc.elementFromPoint(point.x, point.y);
-    if (hit?.closest(".textLayer") && !layer.contains(hit)) return;
+    pendingEndpoint = false;
+    const entry = targetAt(point, hit);
+    if (!entry) return !pendingEndpoint;
+    const { layer, vertical } = entry;
+    if (entry !== drag.origin) drag.crossed = true;
     const span = hit?.closest("span");
-    if (span && layer.contains(span) && inside(span.getBoundingClientRect(), point.x, point.y)) return;
-    lines ??= textLines(layer, vertical);
-    const run = blankTextTarget(lines, point, drag.direction, vertical);
-    if (!run) return;
-    const target = runCaret(run, point, vertical), selection = doc.getSelection();
-    if (!selection || (selection.anchorNode === anchor.node && selection.anchorOffset === anchor.offset && selection.focusNode === target.node && selection.focusOffset === target.offset)) return;
+    const onText = span && layer.contains(span) && inside(span.getBoundingClientRect(), point.x, point.y);
+    if (onText && !drag.crossed) return true;
+    let target = onText ? nativeCaret(doc, point.x, point.y, layer) : undefined;
+    if (!target || !span?.contains(target.node)) {
+      entry.lines ??= textLines(layer, vertical);
+      const run = onText ? entry.lines.flat().find(run => inside(run, point.x, point.y))
+        : blankTextTarget(entry.lines, point, vertical ? drag.xDirection : drag.yDirection, vertical);
+      if (!run) return true;
+      target = runCaret(run, point, vertical);
+    }
+    const selection = doc.getSelection();
+    if (!selection || (selection.anchorNode === anchor.node && selection.anchorOffset === anchor.offset && selection.focusNode === target.node && selection.focusOffset === target.offset)) return true;
     if (selection.anchorNode === anchor.node && selection.anchorOffset === anchor.offset)
       selection.extend(target.node, target.offset);
     else selection.setBaseAndExtent(anchor.node, anchor.offset, target.node, target.offset);
+    return true;
   };
   const schedule = () => { if (drag?.moved && !frame) frame = view.requestAnimationFrame(repair); };
   const down = (event: PointerEvent) => {
     stop();
-    if (event.button !== 0 || (event.pointerType && event.pointerType !== "mouse") || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey || !layer.contains(event.target as Node)) return;
-    const anchor = nativeCaret(doc, event.clientX, event.clientY, layer);
+    pendingEndpoint = false;
+    if (event.button !== 0 || (event.pointerType && event.pointerType !== "mouse") || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    const origin = entryAt(event.target as Node);
+    if (!origin) return;
+    const anchor = nativeCaret(doc, event.clientX, event.clientY, origin.layer);
     if (!anchor) return;
     const point = { x: event.clientX, y: event.clientY };
-    drag = { anchor, start: point, point, moved: false, direction: 0, pointerId: event.pointerId, reliableButtons: !!(event.buttons & 1) };
+    drag = { origin, anchor, start: point, point, moved: false, xDirection: 0, yDirection: 0, crossed: false, pointerId: event.pointerId, reliableButtons: !!(event.buttons & 1) };
   };
   const move = (event: PointerEvent) => {
     if (!drag || event.pointerId !== drag.pointerId) return;
     // Some WebKit mouse input reports buttons=0 even on pointerdown. In that
     // case the observed down/up lifecycle, rather than buttons, owns the drag.
     if (drag.reliableButtons && !(event.buttons & 1)) { stop(); return; }
-    const delta = vertical ? event.clientX - drag.point.x : event.clientY - drag.point.y;
-    if (Math.abs(delta) > 0.5) drag.direction = delta > 0 ? 1 : -1;
+    const dx = event.clientX - drag.point.x, dy = event.clientY - drag.point.y;
+    if (Math.abs(dx) > .5) drag.xDirection = dx > 0 ? 1 : -1;
+    if (Math.abs(dy) > .5) drag.yDirection = dy > 0 ? 1 : -1;
     drag.point = { x: event.clientX, y: event.clientY };
     drag.moved ||= Math.hypot(event.clientX - drag.start.x, event.clientY - drag.start.y) >= 3;
     schedule();
@@ -121,7 +168,7 @@ export function registerBlankTextSelection(layer: HTMLElement, vertical = false)
   const changed = () => {
     if (!drag) return;
     const selection = doc.getSelection();
-    if (!drag.moved && selection?.anchorNode?.nodeType === 3 && layer.contains(selection.anchorNode))
+    if (!drag.moved && selection?.anchorNode?.nodeType === 3 && drag.origin.layer.contains(selection.anchorNode))
       drag.anchor = { node: selection.anchorNode as Text, offset: selection.anchorOffset };
     schedule();
   };
@@ -129,19 +176,48 @@ export function registerBlankTextSelection(layer: HTMLElement, vertical = false)
     if (!drag || event.pointerId !== drag.pointerId) return;
     drag.point = { x: event.clientX, y: event.clientY };
     view.cancelAnimationFrame(frame); frame = 0;
-    repair(); stop();
+    if (!repair()) doc.getSelection()?.removeAllRanges();
+    stop();
   };
-  const scroll = () => { lines = undefined; schedule(); };
+  const scroll = () => { clearGeometry(); schedule(); };
+  const keyboard = () => { if (!drag) pendingEndpoint = false; };
   doc.addEventListener("pointerdown", down, true);
   doc.addEventListener("pointermove", move);
   doc.addEventListener("pointerup", up);
   doc.addEventListener("pointercancel", stop);
   doc.addEventListener("selectionchange", changed);
+  doc.addEventListener("keydown", keyboard);
   view.addEventListener("scroll", scroll, true); view.addEventListener("blur", stop); view.addEventListener("resize", scroll);
-  return () => {
+  return { entries, flush() { view.cancelAnimationFrame(frame); frame = 0; return repair(); }, forget(entry) {
+    if (drag?.origin === entry) { pendingEndpoint = true; stop(); }
+  }, dispose() {
     stop();
     doc.removeEventListener("pointerdown", down, true); doc.removeEventListener("pointermove", move); doc.removeEventListener("pointerup", up);
     doc.removeEventListener("pointercancel", stop); doc.removeEventListener("selectionchange", changed);
+    doc.removeEventListener("keydown", keyboard);
     view.removeEventListener("scroll", scroll, true); view.removeEventListener("blur", stop); view.removeEventListener("resize", scroll);
+  } };
+}
+
+/** Single document gesture retains its origin while crossing registered pages. */
+export function registerBlankTextSelection(layer: HTMLElement, vertical = false): () => void {
+  const doc = layer.ownerDocument;
+  if (!doc.defaultView) return () => {};
+  let controller = hitControllers.get(doc);
+  if (!controller) { controller = createHitController(doc); hitControllers.set(doc, controller); }
+  let entry = controller.entries.get(layer);
+  if (entry) entry.users++;
+  else { entry = { layer, vertical, users: 1 }; controller.entries.set(layer, entry); }
+  let released = false;
+  return () => {
+    if (released) return; released = true;
+    if (--entry!.users) return;
+    controller!.forget(entry!); controller!.entries.delete(layer);
+    if (!controller!.entries.size) { controller!.dispose(); hitControllers.delete(doc); }
   };
+}
+
+/** Collection must follow endpoint repair, including the final mouseup. */
+export function flushBlankTextSelection(doc: Document): boolean {
+  return hitControllers.get(doc)?.flush() ?? true;
 }
