@@ -759,6 +759,12 @@ button:hover {
 }
 .pdf-page canvas {
   display: block;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* Cross-page native ranges traverse the canvas before reaching its text layer. */
+.pdf-page canvas::selection {
+  background: transparent;
 }
 .page-caption {
   display: flex;
