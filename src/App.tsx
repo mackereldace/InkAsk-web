@@ -299,7 +299,9 @@ export default function App() {
       .catch(() => setNotice("本地 API 服务未连接，阅读与 OCR 仍可使用。"));
     void (async () => {
       try {
-        const report = await prepareStorage();
+        const force =
+          new URLSearchParams(window.location.search).get("migrate") === "1";
+        const report = await prepareStorage({ force });
         if (report.migrated) {
           const moved = report.migrated.folders
             ? `${report.migrated.projects} 份资料、${report.migrated.folders} 个文件夹`

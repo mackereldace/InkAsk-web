@@ -220,6 +220,27 @@ describe("disk-backed project storage", () => {
     expect((await retry.listDocuments()).map((item) => item.id)).toEqual(["retry-doc"]);
   });
 
+  it("re-runs the copy when asked, so a restored browser profile can be picked up late", async () => {
+    const storage = await import("../src/core/storage");
+    expect(await storage.prepareStorage()).toEqual({ migrated: null, readOnly: false });
+
+    // The browser copy appears after the first (empty) run.
+    const database = new Dexie("inkask");
+    database.version(1).stores({ projects: "document.id, document.updatedAt" });
+    await database.open();
+    await database.table("projects").put(fixture("late-doc"));
+    database.close();
+
+    expect((await storage.prepareStorage()).migrated).toBeNull(); // flag already set
+    vi.resetModules();
+    const forced = await import("../src/core/storage");
+    expect(await forced.prepareStorage({ force: true })).toEqual({
+      migrated: { projects: 1, folders: 0 },
+      readOnly: false,
+    });
+    expect((await forced.listDocuments()).map((document) => document.id)).toEqual(["late-doc"]);
+  });
+
   it("migrates the browser copy to disk once and leaves it untouched", async () => {
     const database = new Dexie("inkask");
     database.version(1).stores({ projects: "document.id, document.updatedAt" });

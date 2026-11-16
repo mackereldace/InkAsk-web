@@ -438,7 +438,7 @@ function markMigrated(): void {
  * deleting it: if the upload fails halfway, the next start retries the rest and
  * the browser copy is still there to fall back to.
  */
-export async function prepareStorage(): Promise<StorageReport> {
+export async function prepareStorage(options: { force?: boolean } = {}): Promise<StorageReport> {
   return serialize("prepare", async () => {
     let documents: DocumentMetadata[];
     let workspace: Workspace;
@@ -449,7 +449,9 @@ export async function prepareStorage(): Promise<StorageReport> {
       if (error instanceof StorageUnavailableError) return { migrated: null, readOnly: true };
       throw error;
     }
-    if (migrationDone()) return { migrated: null, readOnly: false };
+    // `?migrate=1` re-runs the copy even if a previous run finished, so data that
+    // reappears in the browser (another profile, restored site data) can be picked up.
+    if (!options.force && migrationDone()) return { migrated: null, readOnly: false };
 
     const legacyDocuments = await listLegacyDocuments();
     const legacyFolders = await listLegacyFolders();
