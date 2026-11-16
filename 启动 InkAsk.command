@@ -80,6 +80,19 @@ http_ok() { curl -fsS -m 2 -o /dev/null "$1" 2>/dev/null }
 
 cmdline_of() { ps -p "$1" -o command= 2>/dev/null }
 
+# 本仓库的 InkAsk 进程：npm run dev / tsx watch / vite / npm start 都带仓库绝对路径。
+# 用来区分「命令行里起的自家服务」和「别人的程序占了这个端口」。
+project_pids() {
+  ps -Ao pid=,command= | awk -v root="$ROOT" '
+    index($0, root) && /server\/index\.ts|concurrently|\/vite|tsx watch/ && !/启动 InkAsk\.command/ { print $1 }'
+}
+
+port_is_ours() {  # $1 = 端口；占用者是不是本仓库的进程
+  local pid=$(pid_on_port "$1")
+  [[ -n $pid ]] || return 1
+  [[ -n $(project_pids | tr '\n' ' ' | grep -w -- "$pid") ]]
+}
+
 # 某 PID 的全部后代（用于结束 npm → concurrently → tsx/vite 这一串）
 descendants() {
   ps -Ao pid=,ppid= | awk -v root="$1" '
@@ -246,8 +259,13 @@ check_report() {
     print -r -- "  版本      $git_version$dirty"
   fi
 
-  is_running && print -r -- "  服务      ${CG}已在运行${C0} PID $(state_pid) · $(state_mode) · ${(j:, :)$(current_urls)}" \
-              || print -r -- "  服务      ${CD}未运行${C0}"
+  if is_running; then
+    print -r -- "  服务      ${CG}已在运行${C0} PID $(state_pid) · $(state_mode) · ${(j:, :)$(current_urls)}"
+  elif port_is_ours "$PORT"; then
+    print -r -- "  服务      ${CG}已在运行${C0} ${CY}命令行启动${C0} PID $(pid_on_port "$PORT")（面板可按 2 接管停止）"
+  else
+    print -r -- "  服务      ${CD}未运行${C0}"
+  fi
 
   if [[ $bad -eq 0 ]]; then
     print -r -- "${CG}体检通过${C0}：双击打开面板即可用，或 --start 直接拉起服务。"
@@ -288,8 +306,13 @@ start_server() {
   fi
   local busy=$(pid_on_port "$PORT")
   if [[ -n $busy ]]; then
-    print -r -- "${CR}端口 ${PORT} 已被 PID ${busy} 占用${C0}：$(cmdline_of "$busy")"
-    print -r -- "先在菜单里选 2 停止它，或换端口：PORT=8790 再启动。"
+    if port_is_ours "$PORT"; then
+      print -r -- "${CY}端口 ${PORT} 上是命令行启动的 InkAsk（PID ${busy}）${C0}，不受面板管理。"
+      print -r -- "按 2 可以整串停掉它，按 3 直接接管重启。"
+    else
+      print -r -- "${CR}端口 ${PORT} 已被 PID ${busy} 占用${C0}：$(cmdline_of "$busy")"
+      print -r -- "先在菜单里选 2 停止它，或换端口：PORT=8790 再启动。"
+    fi
     return 1
   fi
   ensure_prereqs || return 1
@@ -334,6 +357,13 @@ stop_server() {
     lp=$(pid_on_port $port)
     [[ -n $lp ]] && targets+=($lp)
   done
+  # 命令行启动的实例（npm run dev → concurrently → tsx/vite）要整串结束，
+  # 否则杀掉监听者之后 tsx watch 会把它重新拉起来。
+  if (( ${#targets} )); then
+    targets+=(${(f)"$(project_pids)"})
+  elif [[ -n $(pid_on_port $PORT) || -n $(pid_on_port $DEV_PORT) ]]; then
+    targets+=(${(f)"$(project_pids)"})
+  fi
   targets=(${(u)targets})
 
   if (( ${#targets} == 0 )); then
@@ -376,7 +406,8 @@ stop_server() {
 restart_server() {
   local mode=$(state_mode)
   [[ -z $mode ]] && mode=prod
-  if is_running; then
+  if is_running || port_is_ours "$PORT" || port_is_ours "$DEV_PORT"; then
+    if ! is_running; then print -r -- "接管命令行启动的实例…"; fi
     stop_server || return 1
   elif [[ -n $(pid_on_port "$PORT") ]]; then
     print -r -- "${CY}端口 ${PORT} 上是外部进程${C0}：$(cmdline_of "$(pid_on_port "$PORT")")"
@@ -445,7 +476,9 @@ render_panel() {
     fi
   else
     local busy=$(pid_on_port "$PORT")
-    if [[ -n $busy ]]; then
+    if [[ -n $busy ]] && port_is_ours "$PORT"; then
+      svc_line="${CG}● 运行中${C0}  ${CC}${BASE}${C0}  ${CY}命令行启动（PID ${busy}，按 2 可整串停止）${C0}"
+    elif [[ -n $busy ]]; then
       svc_line="${CY}● 端口 ${PORT} 被 PID ${busy} 占着（不是本面板启动的）${C0}"
     else
       svc_line="${CD}○ 未运行${C0}"
@@ -537,6 +570,7 @@ menu_loop() {
       1) start_server prod ;;
       2)
         if is_running; then stop_server
+        elif port_is_ours "$PORT"; then stop_server
         elif [[ -n $(pid_on_port "$PORT") ]]; then confirm_stop_foreign
         else print -r -- "服务没在运行。"
         fi ;;
