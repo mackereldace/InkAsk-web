@@ -8,6 +8,14 @@ interface MarkdownNode {
 }
 const parser = unified().use(remarkParse);
 
+/**
+ * `\middle|` inside `\left\{…\right\}` stretches to the height of the braces, which
+ * looks like a stray vertical rule in set-builder notation. `\mid` is the
+ * conventional "such that" bar at normal height; models reach for `\middle|`
+ * far more often than they need it.
+ */
+const MIDDLE_BAR = /(?:\\\s*)?\\middle\|(?:\\\s*)?/g;
+
 function normalizeProse(source: string): string {
   let output = "";
   let at = 0;
@@ -29,12 +37,14 @@ function normalizeProse(source: string): string {
     }
     output += source[at++];
   }
-  return output;
+  return output.replace(MIDDLE_BAR, "\\mid ");
 }
 
 /** Protect every actual CommonMark code range, including indented code. */
 export function normalizeMathMarkdown(source: string): string {
-  if (!source.includes("\\(") && !source.includes("\\[")) return source;
+  if (!source.includes("\\(") && !source.includes("\\[") && !source.includes("\\middle")) {
+    return source;
+  }
   const protectedRanges: Array<[number, number]> = [];
   const visit = (node: MarkdownNode) => {
     if (node.type === "code" || node.type === "inlineCode") {

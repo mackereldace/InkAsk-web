@@ -143,6 +143,19 @@ describe("consistent math and annotation surfaces", () => {
     expect(normalizeMathMarkdown("单个 ` 然后 \\(x\\)")).toContain("$x$");
   });
 
+  it("renders a set-builder bar at normal height instead of a stretched middle bar", () => {
+    const prose = "\\[\\bar{\\mathcal F}=\\left\\{\\bar F(x)=\\int_a^x f(t)\\,dt+C\\ \\middle|\\ f\\in\\mathcal M\\right\\},\\]";
+    const normalized = normalizeMathMarkdown(prose);
+    expect(normalized).toContain("\\mid");
+    expect(normalized).not.toContain("\\middle");
+    // A norm delimiter (\middle\|) is not a set-builder bar and must survive.
+    const norm = "\\[\\left\\|\\frac{a}{b}\\middle\\|\\right\\|\\]";
+    expect(normalizeMathMarkdown(norm)).toContain("\\middle\\|");
+    // Code examples keep their TeX verbatim.
+    const code = "`\\ \\middle| \\`";
+    expect(normalizeMathMarkdown(code)).toBe(code);
+  });
+
   it("preserves optional answer anchors through project backups and ID remapping", async () => {
     const p = fixture();
     p.document.pdf = new Blob(["%PDF-1.7 fixture"]);

@@ -1126,12 +1126,33 @@ button:hover {
 }
 .message-body .katex-display {
   max-width: 100%;
+  /* Wide formulas scroll instead of widening the reading column. */
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 7px 0;
+  /* KaTeX's default 1em margin plus a paragraph margin left a hole around every
+     display formula; one tightened margin reads like a paper. */
+  margin: 0.5em 0;
+  padding: 0;
 }
+/* Math sits a touch above body size: KaTeX glyphs are shorter than CJK ones, so
+   matching the em exactly makes inline formulas look shrunken. The side margin
+   keeps `$f(x)$是` from colliding without breaking line wrapping. */
 .message-body .katex {
-  font-size: 1.12em;
+  font-size: 1.15em;
+  margin: 0 0.12em;
+}
+.message-body .katex-display > .katex {
+  margin: 0;
+  /* Display math is read at a glance, so it gets its own optical size: KaTeX's
+     glyphs are lighter than the CJK body text and its integral has no larger
+     variant, so a modest bump plus a hair of stroke weight is what makes the
+     symbols read like the PDF instead of like hairlines. */
+  font-size: 1.28em;
+}
+.message-body .katex-display .mop,
+.message-body .katex-display .mrel,
+.message-body .katex-display .mbin {
+  -webkit-text-stroke: 0.18px currentColor;
 }
 .source-link {
   padding: 0 4px;
@@ -2478,7 +2499,7 @@ button:hover {
 .answer-question { padding-bottom: 18px; margin-bottom: 20px; border-bottom: 1px solid #edf0e5; }
 .answer-question > small { color: #91a07d; font-size: 11px; }
 .answer-question > p { margin: 8px 0 0; color: #5a6e4e; font-size: 15px; white-space: pre-wrap; }
-.answer-body { font-size: 16px; line-height: 1.95; color: #344e3d; min-height: 90px; }
+.answer-body { font-size: 16px; line-height: 1.8; color: #344e3d; min-height: 90px; }
 .answer-annotation-surface { position: relative; padding-right: 48px; margin-right: -36px; }
 .annotation-preview { display: none; position: absolute; width: min(280px, calc(100vw - var(--sidebar) - 60px)); max-height: 230px; overflow: auto; padding: 12px 14px; border: 1px solid #d8e1c9; border-radius: 6px; background: #fffffa; box-shadow: 0 5px 20px #344a2420; color: #637455; font-size: 12px; line-height: 1.8; pointer-events: auto; z-index: 9; }
 .annotation-preview > small { display: block; color: #92a080; font-size: 10px; margin-bottom: 7px; }
@@ -2491,7 +2512,7 @@ button:hover {
 .reading-source > .message-body { white-space: normal; font-size: 14px; }
 .answer-question > .message-body { font-size: 15px; color: #5a6e4e; }
 .reading-trail .math-text { overflow: hidden; text-overflow: ellipsis; }
-.answer-body p { margin: 15px 0; line-height: 1.95; }
+.answer-body p { margin: 10px 0; line-height: 1.8; }
 .answer-body h1 { font-size: 26px; margin: 28px 0 15px; }
 .answer-body h2 { font-size: 22px; margin: 26px 0 14px; }
 .answer-body h3, .answer-body h4 { font-size: 18px; margin: 23px 0 12px; }
