@@ -58,6 +58,8 @@ import {
   saveProject,
   loadProject,
   listDocuments,
+  prepareStorage,
+  storageInfo,
   deleteProject,
   listFolders, listDocumentFolders, createFolder, renameFolder, deleteFolder, moveDocument, moveFolder,
   type WorkspaceFolder,
@@ -117,6 +119,8 @@ export default function App() {
     [answerSelection, setAnswerSelection] = useState<{ noteId: string; messageId: string; quote: string; anchor: AnswerAnchor }>(),
     [navigation, setNavigation] = useState(0),
     [ocr, setOcr] = useState<number | null>(null),
+    [storage, setStorage] = useState<{ dir: string; projects: number; blobs: number; bytes: number }>(),
+    [storageChecked, setStorageChecked] = useState(false),
     [busyIds, setBusyIds] = useState(new Set<string>()),
     [settings, setSettings] = useState(
       () =>
@@ -280,12 +284,39 @@ export default function App() {
     };
   }, [persist, saveFailed]);
   useEffect(() => {
+    if (!settings) return;
+    let cancelled = false;
+    void storageInfo()
+      .then((info) => { if (!cancelled) setStorage(info); })
+      .catch(() => { if (!cancelled) setStorage(undefined); })
+      .finally(() => { if (!cancelled) setStorageChecked(true); });
+    return () => { cancelled = true; };
+  }, [settings]);
+  useEffect(() => {
     void fetch("/api/status")
       .then((r) => r.json())
       .then(setStatus)
       .catch(() => setNotice("本地 API 服务未连接，阅读与 OCR 仍可使用。"));
-    void refresh()
-      .catch((e) => setNotice("无法读取本地资料库：" + err(e)));
+    void (async () => {
+      try {
+        const report = await prepareStorage();
+        if (report.migrated) {
+          const moved = report.migrated.folders
+            ? `${report.migrated.projects} 份资料、${report.migrated.folders} 个文件夹`
+            : `${report.migrated.projects} 份资料`;
+          setNotice(`已把浏览器里的${moved}复制到磁盘（.inkask/）；浏览器里的旧数据没有删除。`);
+        } else if (report.readOnly) {
+          setNotice("本地服务未运行：现在只能只读打开浏览器里的旧资料，保存需要先启动服务。");
+        }
+      } catch {
+        /* 迁移或探测失败不阻塞阅读；保存时会给出明确错误。 */
+      }
+      try {
+        await refresh();
+      } catch (e) {
+        setNotice("无法读取本地资料库：" + err(e));
+      }
+    })();
     return () => {
       for (const c of controllers.current.values()) c.abort();
     };
@@ -1274,6 +1305,20 @@ export default function App() {
             </header>
             <div className="settings-content">
               <ApiSettings status={status} onChange={setStatus} />
+              <h3>本机存储</h3>
+              {storage ? (
+                <p className="muted">
+                  项目、附件与资料空间写在 <code>{storage.dir}</code>：{storage.projects} 份资料 ·{" "}
+                  {storage.blobs} 个附件 · {(storage.bytes / 1024 / 1024).toFixed(1)} MB。
+                  清除浏览器数据不会删除它们，备份时直接复制这个目录即可。
+                </p>
+              ) : (
+                <p className="muted">
+                  {storageChecked
+                    ? "暂时读不到磁盘位置：本地服务未运行，或该目录不可访问。启动服务（npm start 或双击启动面板）后再打开这里。"
+                    : "读取本机存储位置…"}
+                </p>
+              )}
               <h3>提示词模板</h3>
               {!project ? (
                 <p className="muted">

@@ -17,6 +17,12 @@ import {
 } from "./config.js";
 import type { PrivateProviderConfig } from "./provider-catalog.js";
 import { createProviderClient } from "./adapters.js";
+import {
+  ProjectStore,
+  STORE_LIMITS,
+  StoreLimitError,
+  StoreValidationError,
+} from "./store.js";
 
 export const CONTEXT_BUDGET = 12_000;
 const MAX_PROMPT_LENGTH = 120_000;
@@ -64,6 +70,8 @@ export interface CreateAppOptions {
   configStore?: SettingsStore;
   fetch?: typeof fetch;
   staticRoot?: string;
+  /** Where projects, blobs and the workspace live; defaults to `<cwd>/.inkask`. */
+  dataDir?: string;
   logger?: boolean;
 }
 
@@ -490,6 +498,7 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
       }
     : false;
   const app = Fastify({ logger, bodyLimit: 32 * 1024 * 1024 });
+  const store = new ProjectStore(options.dataDir ?? resolve(process.cwd(), ".inkask"));
   const clientFactory = options.clientFactory ?? createProviderClient;
   const environmentClient = createOpenAIClient(options);
   const environmentModel = options.model?.trim() ?? "";
@@ -680,6 +689,122 @@ export function createApp(options: CreateAppOptions = {}): FastifyInstance {
         streamChat(runtime.client, runtime.model, body, controller.signal),
       ),
     );
+  });
+
+  // ── 项目落盘：元数据、附件字节、资料空间 ───────────────────────────────────
+  function storageFailure(reply: FastifyReply, error: unknown): FastifyReply {
+    if (error instanceof StoreValidationError) {
+      return reply.code(400).send({ error: "invalid_request", message: error.message });
+    }
+    if (error instanceof StoreLimitError) {
+      return reply.code(413).send({ error: "too_large", message: error.message });
+    }
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return reply.code(404).send({ error: "not_found", message: "资料不存在。" });
+    }
+    app.log.error(error);
+    return reply.code(500).send({
+      error: "storage_failed",
+      message: "本机磁盘写入失败，请检查磁盘空间与 .inkask 目录权限。",
+    });
+  }
+
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer", bodyLimit: STORE_LIMITS.blobBytes + 4096 },
+    (_request, body, done) => done(null, body),
+  );
+
+  app.get("/api/storage", async (_request, reply) => {
+    try {
+      return await store.stats();
+    } catch (error) {
+      return storageFailure(reply, error);
+    }
+  });
+
+  app.get("/api/projects", async (_request, reply) => {
+    try {
+      return { documents: await store.list() };
+    } catch (error) {
+      return storageFailure(reply, error);
+    }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
+    try {
+      const project = await store.read(request.params.id);
+      if (!project) return reply.code(404).send({ error: "not_found", message: "资料不存在。" });
+      return { project };
+    } catch (error) {
+      return storageFailure(reply, error);
+    }
+  });
+
+  app.put<{ Params: { id: string } }>(
+    "/api/projects/:id",
+    { bodyLimit: STORE_LIMITS.projectBytes },
+    async (request, reply) => {
+      try {
+        await store.write(request.params.id, request.body);
+        return reply.code(204).send();
+      } catch (error) {
+        return storageFailure(reply, error);
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
+    try {
+      await store.remove(request.params.id);
+      return reply.code(204).send();
+    } catch (error) {
+      return storageFailure(reply, error);
+    }
+  });
+
+  app.put<{ Params: { id: string } }>(
+    "/api/blobs/:id",
+    { bodyLimit: STORE_LIMITS.blobBytes },
+    async (request, reply) => {
+      try {
+        if (!Buffer.isBuffer(request.body)) {
+          throw new StoreValidationError("附件需要以二进制（application/octet-stream）提交。");
+        }
+        await store.writeBlob(request.params.id, request.body);
+        return reply.code(204).send();
+      } catch (error) {
+        return storageFailure(reply, error);
+      }
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/api/blobs/:id", async (request, reply) => {
+    try {
+      const bytes = await store.readBlob(request.params.id);
+      return reply
+        .header("Content-Type", "application/octet-stream")
+        .header("Cache-Control", "private, max-age=31536000, immutable")
+        .send(bytes);
+    } catch (error) {
+      return storageFailure(reply, error);
+    }
+  });
+
+  app.get("/api/workspace", async (_request, reply) => {
+    try {
+      return await store.readWorkspace();
+    } catch (error) {
+      return storageFailure(reply, error);
+    }
+  });
+
+  app.put("/api/workspace", async (request, reply) => {
+    try {
+      return await store.writeWorkspace(request.body);
+    } catch (error) {
+      return storageFailure(reply, error);
+    }
   });
 
   const staticRoot = options.staticRoot

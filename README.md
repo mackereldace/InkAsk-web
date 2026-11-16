@@ -23,7 +23,7 @@
 - **资料空间**：文件夹、搜索、网格 / 列表、多选、拖拽、剪切粘贴；便签随资料移动；可导出 / 导入完整项目 `.inkask`。
 - **笔记也是文件**：「导出 → 笔记目录」把一条便签写成一个 Markdown（front matter 带页码、任务、父便签），附 README 索引树、原 PDF 与截图，可直接进 Git 并全文检索；格式见 [docs/note-export.md](docs/note-export.md)。
 - **模型自选**：OpenAI、Anthropic、Gemini、DeepSeek、通义千问、Kimi、智谱、MiniMax、硅基流动、OpenRouter、Ollama 或任意兼容端点；提示词模板随项目保存与导出。
-- **本地优先**：笔记存浏览器 IndexedDB，密钥存本机 `.inkask/`，本地服务只监听 `127.0.0.1`。
+- **本地优先且落盘**：笔记、PDF 与截图由本机服务写进 `.inkask/`（清浏览器数据不会丢），密钥也只在本机；服务只监听 `127.0.0.1`。
 
 ## 界面
 
@@ -71,6 +71,8 @@ npm run build
 npm start        # http://127.0.0.1:8787
 ```
 
+数据默认写在当前目录的 `.inkask/`（备份复制它即可；`INKASK_DATA_DIR=/some/disk npm start` 可改）。
+
 macOS 也可以双击 **启动 InkAsk.command**：先体检 Node 版本、依赖与运行资源，再后台启动服务，并提供状态、启停、日志、重建、开发模式面板（`--help` 查看命令行用法；日志与 PID 在 `~/Library/Logs/InkAsk`）。Windows 双击 **start-windows.cmd**。
 
 ### 配置模型（可选）
@@ -84,10 +86,11 @@ macOS 也可以双击 **启动 InkAsk.command**：先体检 Node 版本、依赖
 
 ## 数据与隐私
 
-- 文档、OCR、便签、图片与模板保存在当前浏览器的 IndexedDB；阅读位置、缩放和拼接方向单独存在本机偏好中。
-- API 配置保存在本机 `.inkask/providers.json`（目录 `0700`、文件 `0600`）。密钥明文保存在这个受限文件中，页面只显示是否已配置，不回显密钥。
+- **笔记落在磁盘上**：项目和附件由本机服务写进 `.inkask/`——`projects/<id>/project.json` 存便签与回答，`blobs/<sha256>` 按内容寻址存 PDF、选区截图与附图，`workspace.json` 存文件夹与归属。附件同一份内容只存一次，删除资料会回收没人引用的附件。细节见 [docs/storage.md](docs/storage.md)。
+- 数据目录默认是启动目录下的 `.inkask/`，可用 `INKASK_DATA_DIR` 指到别处；备份就是复制这个目录。设置面板里的「本机存储」显示当前位置与体积。阅读位置、缩放与拼接方向仍在浏览器本机偏好里。
+- API 配置同样在 `.inkask/providers.json`（目录 `0700`、文件 `0600`）。密钥明文保存在这个受限文件中，页面只显示是否已配置，不回显密钥。
 - 本地服务校验 Host / Origin，只监听 `127.0.0.1`。提问时仅发送本次提示词、相关文档片段、分支历史和附带的截图，不会上传整份 PDF；检索只覆盖已提取文字的页面。
-- 清除站点数据会删除本地记录。开发地址 `5173` 与构建后地址 `8787` 是不同站点，切换前请「导出 → 完整项目」再导入。`.env` 与 `.inkask/` 已被 Git 忽略。
+- 第一次用新版启动时，会把浏览器里已有的项目复制到磁盘（**不删除**旧数据），完成前保存失败不会写坏任何一边。服务没起来时只能只读浏览器里那份旧数据，保存会明确报错。开发地址 `5173` 与构建后地址 `8787` 看到的是同一份磁盘数据，不必再导出导入。`.env` 与 `.inkask/` 已被 Git 忽略。
 
 ## 开发与验证
 
@@ -100,10 +103,10 @@ npm run build
 ```
 
 - UI 验收：运行 `npx tsx tests/browser-server.ts` 后打开 <http://127.0.0.1:8790>。该服务使用独立临时配置与确定性模拟回答，页面标注「本机模拟 · 非真实 AI」。
-- 引用与证据检索设计见 [docs/evidence-citations.md](docs/evidence-citations.md)；笔记目录格式见 [docs/note-export.md](docs/note-export.md)；大文档性能见 [docs/reader-performance.md](docs/reader-performance.md)；历史验证记录见 [VALIDATION.md](VALIDATION.md)。
+- 落盘与迁移见 [docs/storage.md](docs/storage.md)；引用与证据检索设计见 [docs/evidence-citations.md](docs/evidence-citations.md)；笔记目录格式见 [docs/note-export.md](docs/note-export.md)；大文档性能见 [docs/reader-performance.md](docs/reader-performance.md)；历史验证记录见 [VALIDATION.md](VALIDATION.md)。
 - 把 `.inkask` 直接摊成笔记目录（不进浏览器，落盘即可 `git add`）：`npm run export:notes -- <项目.inkask> <输出目录>`，可选 `--no-pdf` / `--no-assets`。
 - 示例 PDF 可用 `npm run sample` 重新生成；非 macOS 环境重建示例时，可用 `INKASK_CJK_FONT` 指定中文字体。
 
 ## 边界
 
-个人本机使用：没有账号、跨设备同步、手写、语音或图片生成。OCR 与公式识别可能出错，可校正文字或改附截图；模型能力与计费以服务商为准。
+个人本机使用：没有账号、跨设备同步、手写、语音或图片生成。数据跟着启动目录走，从两个目录各起一份就有两份 `.inkask/`；跨机器请复制目录或导出 `.inkask`。OCR 与公式识别可能出错，可校正文字或改附截图；模型能力与计费以服务商为准。

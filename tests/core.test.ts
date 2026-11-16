@@ -1,4 +1,3 @@
-import "fake-indexeddb/auto";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
@@ -490,38 +489,4 @@ it("preserves ordinary text that happens to contain an old ID", async () => {
   const imported = await importProject(await exportProject(project));
   expect(imported.document.name).toBe("note-old.pdf");
   expect(imported.notes[0].anchor.quote).toBe(n.anchor.quote);
-});
-
-describe("IndexedDB persistence", () => {
-  beforeEach(async () => {
-    const storage = await import("../src/core/storage");
-    await storage.deleteProject("storage-doc");
-  });
-
-  it("saves blobs, lists documents, and repairs interrupted streams on load", async () => {
-    const storage = await import("../src/core/storage");
-    const project = projectFixture();
-    project.document.id = "storage-doc";
-    project.document.name = "持久化测试.pdf";
-    project.notes = [
-      {
-        ...note(),
-        messages: [
-          message("stream-message", "assistant", "半截回答", "streaming"),
-        ],
-      },
-    ];
-
-    await storage.saveProject(project);
-    const loaded = await storage.loadProject("storage-doc");
-    const documents = await storage.listDocuments();
-
-    expect(await loaded?.document.pdf.text()).toBe("%PDF-1.7 fixture");
-    expect(loaded?.notes[0].messages[0].status).toBe("stopped");
-    expect(documents.some((document) => document.id === "storage-doc")).toBe(
-      true,
-    );
-    await storage.deleteProject("storage-doc");
-    expect(await storage.loadProject("storage-doc")).toBeUndefined();
-  });
 });
