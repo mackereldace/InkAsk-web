@@ -263,15 +263,35 @@ export class ConfigStore implements SettingsStore {
   private loading: Promise<StoredState> | undefined;
   private corrupt = false;
   private saveQueue: Promise<void> = Promise.resolve();
+  /** `size:mtimeMs` of the file the cached state came from, or "missing". */
+  private fingerprint: string | undefined;
 
   constructor(filePath: string) {
     this.filePath = resolve(filePath);
   }
 
+  /** Cheap identity of the settings file, so an external copy/edit is noticed. */
+  private async readFingerprint(): Promise<string> {
+    try {
+      const metadata = await lstat(this.filePath);
+      if (!metadata.isFile()) return "invalid";
+      return `${metadata.size}:${metadata.mtimeMs}`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+      return "invalid";
+    }
+  }
+
   private async load(): Promise<StoredState> {
-    if (this.state) return this.state;
-    if (this.corrupt) throw new ConfigStoreError();
     if (this.loading) return this.loading;
+    // The file is the source of truth: replacing providers.json on disk (copying
+    // a backup, restoring after a reinstall) must take effect without a restart.
+    const fingerprint = await this.readFingerprint();
+    if (this.state && fingerprint === this.fingerprint) {
+      if (this.corrupt) throw new ConfigStoreError();
+      return this.state;
+    }
+    if (this.corrupt && fingerprint === this.fingerprint) throw new ConfigStoreError();
 
     this.loading = (async () => {
       const directory = dirname(this.filePath);
@@ -284,6 +304,7 @@ export class ConfigStore implements SettingsStore {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           this.state = emptyState();
+          this.fingerprint = "missing";
           return this.state;
         }
         this.corrupt = true;
@@ -302,6 +323,7 @@ export class ConfigStore implements SettingsStore {
         }
         const parsed = JSON.parse(raw);
         this.state = parseStoredState(parsed);
+        this.fingerprint = fingerprint;
         return this.state;
       } catch {
         this.corrupt = true;
@@ -328,6 +350,9 @@ export class ConfigStore implements SettingsStore {
       await chmod(temporary, 0o600);
       await rename(temporary, this.filePath);
       await chmod(this.filePath, 0o600);
+      // The cached state now matches this file; remember its identity so the next
+      // read does not re-parse it just because the mtime moved.
+      this.fingerprint = await this.readFingerprint();
     } catch {
       await handle?.close().catch(() => undefined);
       await unlink(temporary).catch(() => undefined);

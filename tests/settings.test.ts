@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import type {
   StreamEvent,
 } from "../server/app.js";
 import { createApp } from "../server/app.js";
-import { ConfigStore } from "../server/config.js";
+import { ConfigStore, ConfigStoreError } from "../server/config.js";
 import type { ProviderConfigInput } from "../src/types.js";
 
 const openAIConfig: ProviderConfigInput = {
@@ -58,6 +58,57 @@ async function temporaryStore(): Promise<{
   const filePath = join(directory, ".inkask", "providers.json");
   return { directory, filePath, store: new ConfigStore(filePath) };
 }
+
+describe("settings file replaced on disk", () => {
+  const STORED = {
+    version: 1,
+    activeProviderId: "deepseek",
+    profiles: {
+      deepseek: {
+        providerId: "deepseek",
+        baseURL: "https://api.deepseek.com",
+        model: "deepseek-flash",
+        protocol: "chat-completions",
+        supportsImages: true,
+        apiKey: "sk-external-copy-12345",
+      },
+    },
+  };
+
+  it("picks up a providers.json copied in while the service is running", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inkask-config-swap-"));
+    const file = join(dir, "providers.json");
+    const store = new ConfigStore(file);
+    expect((await store.snapshot()).activeConfig).toBeNull();
+
+    await writeFile(file, JSON.stringify(STORED), "utf8");
+    const snapshot = await store.snapshot();
+    expect(snapshot.activeConfig?.providerId).toBe("deepseek");
+    expect(snapshot.activeConfig?.model).toBe("deepseek-flash");
+    expect(snapshot.settings.profiles[0].hasKey).toBe(true);
+    expect(JSON.stringify(snapshot.settings)).not.toContain("sk-external-copy");
+
+    // Replacing the file again (a second copy) is noticed too.
+    await writeFile(file, JSON.stringify({ ...STORED, activeProviderId: null, profiles: {} }), "utf8");
+    expect((await store.snapshot()).activeConfig).toBeNull();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("keeps serving the last good state when the file becomes unreadable, and recovers", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inkask-config-broken-"));
+    const file = join(dir, "providers.json");
+    await writeFile(file, JSON.stringify(STORED), "utf8");
+    const store = new ConfigStore(file);
+    expect((await store.snapshot()).activeConfig?.model).toBe("deepseek-flash");
+
+    await writeFile(file, "{ broken", "utf8");
+    await expect(store.snapshot()).rejects.toBeInstanceOf(ConfigStoreError);
+
+    await writeFile(file, JSON.stringify(STORED), "utf8");
+    expect((await store.snapshot()).activeConfig?.model).toBe("deepseek-flash");
+    await rm(dir, { recursive: true, force: true });
+  });
+});
 
 describe("InkAsk provider settings", () => {
   it("atomically persists private profiles with private permissions", async () => {
