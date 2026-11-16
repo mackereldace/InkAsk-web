@@ -189,6 +189,37 @@ describe("disk-backed project storage", () => {
     expect(await bytes(loaded!.document.pdf)).toEqual([0, 255, 42]);
   });
 
+  it("does not claim success when a project fails to migrate", async () => {
+    const database = new Dexie("inkask");
+    database.version(1).stores({ projects: "document.id, document.updatedAt" });
+    await database.open();
+    await database.table("projects").put(fixture("retry-doc"));
+    database.close();
+
+    // First run: the service answers the listing but rejects the project write,
+    // so nothing may be marked as migrated.
+    const real = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if ((init?.method ?? "GET").toUpperCase() === "PUT" && url.startsWith("/api/projects/")) {
+        return new Response(JSON.stringify({ message: "磁盘已满" }), { status: 500 });
+      }
+      return real(input, init);
+    }) as unknown as typeof fetch;
+    const storage = await import("../src/core/storage");
+    const first = await storage.prepareStorage();
+    expect(first.migrated).toBeNull();
+    expect(await storage.listDocuments()).toHaveLength(0);
+
+    // Second run with the service healthy copies the project for real.
+    globalThis.fetch = real;
+    vi.resetModules();
+    const retry = await import("../src/core/storage");
+    const second = await retry.prepareStorage();
+    expect(second.migrated).toEqual({ projects: 1, folders: 0 });
+    expect((await retry.listDocuments()).map((item) => item.id)).toEqual(["retry-doc"]);
+  });
+
   it("migrates the browser copy to disk once and leaves it untouched", async () => {
     const database = new Dexie("inkask");
     database.version(1).stores({ projects: "document.id, document.updatedAt" });

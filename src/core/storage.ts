@@ -456,6 +456,7 @@ export async function prepareStorage(): Promise<StorageReport> {
     const legacyMemberships = await listLegacyMemberships();
     const known = new Set(documents.map((document) => document.id));
     let projects = 0;
+    let failures = 0;
     for (const document of legacyDocuments) {
       if (known.has(document.id)) continue;
       const project = await loadLegacyProject(document.id).catch(() => undefined);
@@ -464,7 +465,9 @@ export async function prepareStorage(): Promise<StorageReport> {
         await saveProject(project);
         projects += 1;
       } catch {
-        // Keep going; the flag is only set at the end, so the rest retries next start.
+        // A failed project must not be forgotten: the flag stays unset and the
+        // whole migration retries on the next start (already-copied ids skip).
+        failures += 1;
       }
     }
 
@@ -479,8 +482,13 @@ export async function prepareStorage(): Promise<StorageReport> {
       if (!workspace.folders.some((folder) => folder.id === membership.folderId)) continue;
       workspace.memberships.push({ projectId: membership.projectId, folderId: membership.folderId });
     }
-    if (folders) await writeWorkspace(workspace);
-    markMigrated();
+    if (folders) {
+      await writeWorkspace(workspace).catch(() => {
+        failures += 1;
+      });
+    }
+    // Only a complete run earns the flag; otherwise the next start tries again.
+    if (failures === 0) markMigrated();
     return { migrated: projects || folders ? { projects, folders } : null, readOnly: false };
   });
 }
