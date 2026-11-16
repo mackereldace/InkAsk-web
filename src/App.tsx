@@ -63,6 +63,7 @@ import {
   type WorkspaceFolder,
 } from "./core/storage";
 import { exportProject, importProject, exportMarkdown } from "./core/archive";
+import { buildNoteExportZip } from "./core/note-export";
 import type {
   Anchor,
   AnswerAnchor,
@@ -872,6 +873,19 @@ export default function App() {
       setNotice("导出失败：" + err(e));
     }
   }
+  async function exportNoteDirectory() {
+    const p = projectRef.current;
+    if (!p) return;
+    setExportMenu(false);
+    try {
+      download(
+        await buildNoteExportZip(p),
+        p.document.name.replace(/\.pdf$/i, "") + "-笔记目录.zip",
+      );
+    } catch (e) {
+      setNotice("导出失败：" + err(e));
+    }
+  }
   const answerScaleRef = useRef(answerScale);
   answerScaleRef.current = answerScale;
   useEffect(() => {
@@ -1121,6 +1135,9 @@ export default function App() {
                       }}
                     >
                       笔记 Markdown
+                    </button>
+                    <button onClick={() => void exportNoteDirectory()}>
+                      笔记目录 (.zip)
                     </button>
                   </div>
                 )}

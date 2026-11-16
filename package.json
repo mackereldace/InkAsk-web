@@ -12,7 +12,8 @@
     "build": "tsc --noEmit && vite build",
     "start": "tsx server/index.ts",
     "test": "vitest run",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "export:notes": "tsx scripts/export-notes.mts"
   },
   "dependencies": {
     "@fastify/static": "^8.0.0",
